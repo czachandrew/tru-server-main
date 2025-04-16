@@ -1,0 +1,233 @@
+# schema.graphql
+
+# Type Definitions
+type Product {
+  id: ID!
+  name: String!
+  slug: String!
+  description: String
+  specifications: JSONObject
+  manufacturer: Manufacturer!
+  partNumber: String!
+  categories: [Category!]
+  weight: Float
+  dimensions: JSONObject
+  mainImage: String
+  additionalImages: [String]
+  status: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  offers: [Offer!]
+  affiliateLinks: [AffiliateLink!]
+  exists: Boolean!
+}
+
+type Manufacturer {
+  id: ID!
+  name: String!
+  slug: String!
+  logo: String
+  website: String
+  description: String
+  products: [Product!]
+}
+
+type Category {
+  id: ID!
+  name: String!
+  slug: String!
+  description: String
+  image: String
+  displayOrder: Int
+  isVisible: Boolean!
+  parent: Category
+  children: [Category!]
+  products: [Product!]
+}
+
+type Offer {
+  id: ID!
+  product: Product!
+  vendor: Vendor!
+  costPrice: Float!
+  sellingPrice: Float!
+  msrp: Float
+  vendorSku: String
+  vendorUrl: String
+  stockQuantity: Int!
+  isInStock: Boolean!
+  availabilityUpdatedAt: DateTime!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type Vendor {
+  id: ID!
+  name: String!
+  code: String!
+  contactName: String
+  contactEmail: String
+  contactPhone: String
+  apiEndpoint: String
+  paymentTerms: String
+  shippingTerms: String
+  isActive: Boolean!
+  offers: [Offer!]
+}
+
+type AffiliateLink {
+  id: ID!
+  product: Product!
+  platform: String!
+  platformId: String!
+  originalUrl: String!
+  affiliateUrl: String!
+  clicks: Int!
+  conversions: Int!
+  revenue: Float!
+  isActive: Boolean!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type Cart {
+  id: ID!
+  user: User
+  sessionId: String
+  items: [CartItem!]!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  totalItems: Int!
+  totalPrice: Float!
+}
+
+type CartItem {
+  id: ID!
+  cart: Cart!
+  offer: Offer!
+  quantity: Int!
+  addedAt: DateTime!
+  updatedAt: DateTime!
+  totalPrice: Float!
+}
+
+type User {
+  id: ID!
+  username: String!
+  email: String!
+  profile: UserProfile
+  cart: Cart
+}
+
+type UserProfile {
+  id: ID!
+  user: User!
+  phone: String
+  company: String
+  preferredCategories: [Category!]
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+# Custom scalar types
+scalar DateTime
+scalar JSONObject
+
+# Input Types
+input ProductInput {
+  name: String!
+  description: String
+  manufacturerId: ID!
+  partNumber: String!
+  categoryIds: [ID!]
+  specifications: JSONObject
+  weight: Float
+  dimensions: JSONObject
+  mainImage: String
+  additionalImages: [String]
+  status: String
+}
+
+input AmazonProductInput {
+  name: String!
+  description: String
+  partNumber: String!
+  manufacturerName: String!
+  asin: String!
+  url: String!
+  image: String
+  price: Float
+  categoryName: String
+}
+
+input CartItemInput {
+  offerId: ID!
+  quantity: Int!
+}
+
+input AffiliateLinkInput {
+  productId: ID!
+  platform: String!
+  platformId: String!
+  originalUrl: String!
+}
+
+# Queries
+type Query {
+  # Product queries
+  product(id: ID, partNumber: String): Product
+  products(
+    search: String
+    categoryId: ID
+    manufacturerId: ID
+    limit: Int
+    offset: Int
+  ): [Product!]!
+  
+  # Category queries
+  categories(parentId: ID): [Category!]!
+  category(id: ID!): Category
+  
+  # Manufacturer queries
+  manufacturers: [Manufacturer!]!
+  manufacturer(id: ID!): Manufacturer
+  
+  # Offer queries
+  offersByProduct(productId: ID!): [Offer!]!
+  
+  # Check if product exists
+  productExists(partNumber: String!, asin: String, url: String): ProductExistsResponse!
+  
+  # Affiliate links
+  affiliateLinks(productId: ID!): [AffiliateLink!]!
+  
+  # Cart
+  cart(id: ID, sessionId: String): Cart
+}
+
+type ProductExistsResponse {
+  exists: Boolean!
+  product: Product
+  message: String
+}
+
+# Mutations
+type Mutation {
+  # Product mutations
+  createProduct(input: ProductInput!): Product!
+  updateProduct(id: ID!, input: ProductInput!): Product!
+  
+  # Create product from Amazon listing
+  createProductFromAmazon(input: AmazonProductInput!): Product!
+  
+  # Affiliate link mutations
+  createAffiliateLink(input: AffiliateLinkInput!): AffiliateLink!
+  createAmazonAffiliateLink(asin: String!, productId: ID): AffiliateLink!
+  updateAffiliateLink(id: ID!, isActive: Boolean): AffiliateLink!
+  
+  # Cart mutations
+  addToCart(sessionId: String, cartId: ID, item: CartItemInput!): Cart!
+  updateCartItem(id: ID!, quantity: Int!): CartItem!
+  removeFromCart(id: ID!): Boolean!
+  clearCart(cartId: ID!, sessionId: String): Boolean!
+}
