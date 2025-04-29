@@ -13,9 +13,12 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 from pathlib import Path
 import os
 import environ
+from dotenv import load_dotenv
 
-env = environ.Env()
-environ.Env.read_env()
+env_path = Path('.') / '.env'
+load_dotenv(dotenv_path=env_path)
+
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,8 +47,10 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'django_q',
     # Third party apps
+    'corsheaders',
     'graphene_django',
     # Project apps
+    'ecommerce_platform',
     'products',
     'vendors',
     'offers',
@@ -54,6 +59,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -68,6 +74,7 @@ ROOT_URLCONF = 'ecommerce_platform.urls'
 GRAPHENE = {
     'SCHEMA': 'ecommerce_platform.schema.schema'
 }
+CORS_URLS_REGEX = r'^/graphql/.*$'
 
 Q_CLUSTER = {
     'name': 'ecommerce_platform',
@@ -80,8 +87,8 @@ Q_CLUSTER = {
     'cpu_affinity': 1,
     'label': 'Django Q',
     'redis': {
-        'host': env('REDIS_HOST', default='localhost'),
-        'port': env('REDIS_PORT', default=6379),
+        'host': os.environ.get('REDIS_HOST', default='localhost'),
+        'port': os.environ.get('REDIS_PORT', default=6379),
         'db': 0,
     }
 }
@@ -104,6 +111,17 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'ecommerce_platform.wsgi.application'
 
+CORS_ALLOW_ALL_ORIGINS = True
+
+CORS_ALLOW_ORIGINS = [ 
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
 
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
@@ -111,11 +129,11 @@ WSGI_APPLICATION = 'ecommerce_platform.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': env('DATABASE_NAME', default='ecommerce_platform'),
-        'USER': env('DATABASE_USER', default='postgres'),
-        'PASSWORD': env('DATABASE_PASSWORD', default='postgres'),
-        'HOST': env('DATABASE_HOST', default='localhost'),
-        'PORT': env('DATABASE_PORT', default='5436'),
+        'NAME': os.environ.get('DATABASE_NAME', default='ecommerce_platform'),
+        'USER': os.environ.get('DATABASE_USER', default='postgres'),
+        'PASSWORD': os.environ.get('DATABASE_PASSWORD', default='postgres'),
+        'HOST': os.environ.get('DATABASE_HOST', default='localhost'),
+        'PORT': '5436',
     }
 }
 
@@ -162,3 +180,39 @@ STATIC_URL = '/static/'
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': 'graphql-debug.log',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'ecommerce_platform.graphql': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+        'graphene_django': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}

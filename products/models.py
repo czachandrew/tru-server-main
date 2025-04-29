@@ -71,6 +71,9 @@ class Product(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     status = models.CharField(max_length=20, choices=PRODUCT_STATUS_CHOICES, default='active')
 
+    # Add this new field
+    is_featured = models.BooleanField(default=False)
+
     class Meta:
         # Comment out the indexes temporarily
         # indexes = [

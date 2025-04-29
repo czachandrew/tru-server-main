@@ -5,11 +5,12 @@ from graphql import GraphQLError
 from django.db.models import Q
 from django.contrib.auth.models import User
 
-from products.models import Product, Category, Manufacturer
+from products.models import Product as ProductModel, Category, Manufacturer
 from offers.models import Offer
 from vendors.models import Vendor
 from affiliates.models import AffiliateLink
 from store.models import Cart, CartItem, UserProfile
+from ecommerce_platform.graphql.types.product import Product
 
 # Custom Scalars
 from graphene.types.scalars import Scalar
@@ -31,12 +32,20 @@ class JSONScalar(Scalar):
         return json.loads(value)
 
 # Type Definitions
-class ProductType(DjangoObjectType):
+class Product(DjangoObjectType):
     class Meta:
-        model = Product
+        model = ProductModel
         fields = "__all__"
+        name = "Product"
     
-    exists = graphene.Boolean(default_value=True)
+    # GraphQL expects camelCase but Django uses snake_case
+    mainImage = graphene.String(source='main_image')
+    additionalImages = graphene.List(graphene.String, source='additional_images')
+    partNumber = graphene.String(source='part_number')
+    dimensions = graphene.Field('ecommerce_platform.schema.Dimensions')
+    
+    def resolve_dimensions(self, info):
+        return self.dimensions or {}
 
 class CategoryType(DjangoObjectType):
     class Meta:
@@ -48,15 +57,15 @@ class ManufacturerType(DjangoObjectType):
         model = Manufacturer
         fields = "__all__"
 
-class OfferType(DjangoObjectType):
-    class Meta:
-        model = Offer
-        fields = "__all__"
+# class OfferType(DjangoObjectType):
+#     class Meta:
+#         model = Offer
+#         fields = "__all__"
 
-class VendorType(DjangoObjectType):
-    class Meta:
-        model = Vendor
-        fields = "__all__"
+# class VendorType(DjangoObjectType):
+#     class Meta:
+#         model = Vendor
+#         fields = "__all__"
 
 class AffiliateLinkType(DjangoObjectType):
     class Meta:
@@ -99,7 +108,7 @@ class UserProfileType(DjangoObjectType):
 
 class ProductExistsResponse(graphene.ObjectType):
     exists = graphene.Boolean()
-    product = graphene.Field(ProductType)
+    product = graphene.Field(Product)
     message = graphene.String()
 
 # Input Types
@@ -140,16 +149,12 @@ class AffiliateLinkInput(graphene.InputObjectType):
 # Query Class
 class Query(graphene.ObjectType):
     # Product queries
-    product = graphene.Field(
-        ProductType, 
-        id=graphene.ID(), 
-        part_number=graphene.String()
-    )
-    products = graphene.List(
-        ProductType,
+    product = graphene.Field(Product, id=graphene.ID(), part_number=graphene.String())
+    products = graphene.Field(
+        'ecommerce_platform.schema.ProductConnection',
         search=graphene.String(),
-        category_id=graphene.ID(),
-        manufacturer_id=graphene.ID(),
+        categoryId=graphene.ID(),
+        manufacturerId=graphene.ID(),
         limit=graphene.Int(),
         offset=graphene.Int()
     )
@@ -163,7 +168,7 @@ class Query(graphene.ObjectType):
     manufacturer = graphene.Field(ManufacturerType, id=graphene.ID(required=True))
     
     # Offer queries
-    offers_by_product = graphene.List(OfferType, product_id=graphene.ID(required=True))
+    offers_by_product = graphene.List('ecommerce_platform.graphql.types.offer.Offer', product_id=graphene.ID(required=True))
     
     # Check if product exists
     product_exists = graphene.Field(
@@ -179,40 +184,72 @@ class Query(graphene.ObjectType):
     # Cart
     cart = graphene.Field(CartType, id=graphene.ID(), session_id=graphene.String())
     
+    # Add the featured products query
+    featured_products = graphene.List(
+        Product,
+        limit=graphene.Int()
+    )
+    
+    def resolve_featured_products(self, info, limit=None):
+        """
+        Resolver to get featured products based on featured flag
+        """
+        # First try to get products marked as featured
+        queryset = ProductModel.objects.filter(status='active', is_featured=True)
+        
+        # If no featured products, fall back to newest products
+        if queryset.count() == 0:
+            queryset = ProductModel.objects.filter(status='active').order_by('-created_at')
+        
+        # Prefetch related data to avoid N+1 query issues
+        queryset = queryset.prefetch_related(
+            'manufacturer',
+            'categories',
+            'offers',
+            'offers__vendor'
+        )
+        
+        # Apply limit if provided
+        if limit:
+            queryset = queryset[:limit]
+        
+        return queryset
+    
     def resolve_product(self, info, id=None, part_number=None):
         if id:
-            return Product.objects.get(pk=id)
+            return ProductModel.objects.get(pk=id)
         if part_number:
-            return Product.objects.get(part_number=part_number)
+            return ProductModel.objects.get(part_number=part_number)
         return None
     
-    def resolve_products(self, info, search=None, category_id=None, manufacturer_id=None, limit=None, offset=None):
-        products = Product.objects.all()
+    def resolve_products(self, info, search=None, categoryId=None, manufacturerId=None, limit=None, offset=None):
+        query = ProductModel.objects.all()
         
         if search:
-            if hasattr(Product, 'search_vector') and Product.search_vector is not None:
-                products = products.filter(search_vector=search)
-            else:
-                # Fallback to basic search if search_vector is not available
-                products = products.filter(
-                    Q(name__icontains=search) | 
-                    Q(description__icontains=search) |
-                    Q(part_number__icontains=search)
-                )
+            query = query.filter(
+                Q(name__icontains=search) | 
+                Q(description__icontains=search) |
+                Q(part_number__icontains=search)
+            )
         
-        if category_id:
-            products = products.filter(categories__id=category_id)
+        if categoryId:
+            query = query.filter(categories__id=categoryId)
         
-        if manufacturer_id:
-            products = products.filter(manufacturer_id=manufacturer_id)
+        if manufacturerId:
+            query = query.filter(manufacturer_id=manufacturerId)
+        
+        total_count = query.count()
         
         if offset is not None:
-            products = products[offset:]
+            query = query[offset:]
         
         if limit is not None:
-            products = products[:limit]
+            query = query[:limit]
             
-        return products
+        return ProductConnection(
+            totalCount=total_count,
+            items=list(query)
+        )
     
     def resolve_categories(self, info, parent_id=None):
         if parent_id:
@@ -233,13 +270,13 @@ class Query(graphene.ObjectType):
     
     def resolve_product_exists(self, info, part_number, asin=None, url=None):
         try:
-            product = Product.objects.get(part_number=part_number)
+            product = ProductModel.objects.get(part_number=part_number)
             return ProductExistsResponse(
                 exists=True,
                 product=product,
                 message="Product found in database"
             )
-        except Product.DoesNotExist:
+        except ProductModel.DoesNotExist:
             return ProductExistsResponse(
                 exists=False,
                 product=None,
@@ -268,14 +305,14 @@ class CreateProduct(graphene.Mutation):
     class Arguments:
         input = ProductInput(required=True)
     
-    product = graphene.Field(ProductType)
+    product = graphene.Field(Product)
     
     @staticmethod
     def mutate(root, info, input):
         manufacturer = Manufacturer.objects.get(pk=input.manufacturer_id)
         
         # Create the product
-        product = Product(
+        product = ProductModel(
             name=input.name,
             description=input.description,
             manufacturer=manufacturer,
@@ -303,13 +340,13 @@ class UpdateProduct(graphene.Mutation):
         id = graphene.ID(required=True)
         input = ProductInput(required=True)
     
-    product = graphene.Field(ProductType)
+    product = graphene.Field(Product)
     
     @staticmethod
     def mutate(root, info, id, input):
         try:
-            product = Product.objects.get(pk=id)
-        except Product.DoesNotExist:
+            product = ProductModel.objects.get(pk=id)
+        except ProductModel.DoesNotExist:
             raise GraphQLError(f"Product with ID {id} does not exist")
         
         # Update basic fields
@@ -355,7 +392,7 @@ class CreateProductFromAmazon(graphene.Mutation):
     class Arguments:
         input = AmazonProductInput(required=True)
     
-    product = graphene.Field(ProductType)
+    product = graphene.Field(Product)
     
     @staticmethod
     def mutate(root, info, input):
@@ -366,7 +403,7 @@ class CreateProductFromAmazon(graphene.Mutation):
         )
         
         # Create new product
-        product = Product(
+        product = ProductModel(
             name=input.name,
             description=input.description,
             manufacturer=manufacturer,
@@ -415,7 +452,7 @@ class CreateAffiliateLink(graphene.Mutation):
     
     @staticmethod
     def mutate(root, info, input):
-        product = Product.objects.get(pk=input.product_id)
+        product = ProductModel.objects.get(pk=input.product_id)
         
         affiliate_link = AffiliateLink(
             product=product,
@@ -449,7 +486,7 @@ class CreateAmazonAffiliateLink(graphene.Mutation):
             except AffiliateLink.DoesNotExist:
                 raise GraphQLError("No product found for this ASIN. Please create product first.")
         
-        product = Product.objects.get(pk=product_id)
+        product = ProductModel.objects.get(pk=product_id)
         
         # Create basic affiliate link
         affiliate_link = AffiliateLink(
@@ -614,5 +651,16 @@ class Mutation(graphene.ObjectType):
     update_cart_item = UpdateCartItem.Field()
     remove_from_cart = RemoveFromCart.Field()
     clear_cart = ClearCart.Field()
+
+# Add a Dimensions type that matches the fragment
+class Dimensions(graphene.ObjectType):
+    length = graphene.Float()
+    width = graphene.Float()
+    height = graphene.Float()
+
+# Create a pagination container for products
+class ProductConnection(graphene.ObjectType):
+    totalCount = graphene.Int()
+    items = graphene.List(Product)
 
 schema = graphene.Schema(query=Query, mutation=Mutation)

@@ -1,4 +1,4 @@
-import requests
+
 import os
 from affiliates.models import AffiliateLink
 
