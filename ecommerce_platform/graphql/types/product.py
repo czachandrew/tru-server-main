@@ -32,4 +32,9 @@ class Manufacturer(DjangoObjectType):
         fields = (
             "id", "name", "slug", "logo", "website", 
             "description", "products"
-        ) 
+        )
+
+class ProductType(DjangoObjectType):
+    class Meta:
+        model = ProductModel
+        fields = "__all__" 

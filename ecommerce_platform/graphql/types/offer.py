@@ -1,11 +1,21 @@
 import graphene
 from graphene_django import DjangoObjectType
-from offers.models import Offer as OfferModel
-from vendors.models import Vendor as VendorModel
+from offers.models import Offer
+from vendors.models import Vendor
+
+class OfferType(DjangoObjectType):
+    class Meta:
+        model = Offer
+        fields = "__all__"
+
+class VendorType(DjangoObjectType):
+    class Meta:
+        model = Vendor
+        fields = "__all__"
 
 class Offer(DjangoObjectType):
     class Meta:
-        model = OfferModel
+        model = Offer
         name = "Offer"
         fields = (
             "id", "product", "vendor", "cost_price", "selling_price",
@@ -17,7 +27,7 @@ class Offer(DjangoObjectType):
 
 class Vendor(DjangoObjectType):
     class Meta:
-        model = VendorModel
+        model = Vendor
         name = "Vendor"
         fields = (
             "id", "name", "code", "contact_name", "contact_email",

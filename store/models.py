@@ -3,27 +3,12 @@ from django.contrib.auth.models import User
 from django.db.models import Q
 from products.models import Category
 from offers.models import Offer
+from django.conf import settings
 
-class UserProfile(models.Model):
-    """Extended user information"""
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    
-    # Additional user data
-    phone = models.CharField(max_length=20, blank=True)
-    company = models.CharField(max_length=100, blank=True)
-    
-    # Preferences
-    preferred_categories = models.ManyToManyField(Category, blank=True)
-    
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    def __str__(self):
-        return f"Profile for {self.user.username}"
 
 class Cart(models.Model):
     """Shopping cart"""
-    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
     session_id = models.CharField(max_length=100, blank=True)  # For anonymous users
     
     created_at = models.DateTimeField(auto_now_add=True)

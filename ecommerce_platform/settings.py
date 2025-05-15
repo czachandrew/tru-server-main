@@ -14,7 +14,7 @@ from pathlib import Path
 import os
 import environ
 from dotenv import load_dotenv
-
+from datetime import timedelta
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
 
@@ -49,13 +49,14 @@ INSTALLED_APPS = [
     # Third party apps
     'corsheaders',
     'graphene_django',
+    'graphql_jwt.refresh_token',
     # Project apps
-    'ecommerce_platform',
     'products',
     'vendors',
     'offers',
     'affiliates',
     'store',
+    'users',
 ]
 
 MIDDLEWARE = [
@@ -69,11 +70,35 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+AUTH_USER_MODEL = 'users.User'
+
 ROOT_URLCONF = 'ecommerce_platform.urls'
 
 GRAPHENE = {
-    'SCHEMA': 'ecommerce_platform.schema.schema'
+    'SCHEMA': 'ecommerce_platform.schema.schema',
+    'MIDDLEWARE': [
+        'graphql_jwt.middleware.JSONWebTokenMiddleware',
+    ],
 }
+
+REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+REDIS_DB = int(os.environ.get('REDIS_DB', 0))
+
+AUTHENTICATION_BACKENDS = [
+    "ecommerce_platform.jwt_debug.DebugJSONWebTokenBackend",  # Our debug backend first
+    "graphql_jwt.backends.JSONWebTokenBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
+GRAPHQL_JWT = {
+    'JWT_VERIFY_EXPIRATION': True,
+    'JWT_EXPIRATION_DELTA': timedelta(minutes=60),
+    'JWT_SECRET_KEY': SECRET_KEY,  # Must match your Django SECRET_KEY
+    'JWT_ALGORITHM': 'HS256',
+    'JWT_AUTH_HEADER_PREFIX': 'JWT',
+}
+
 CORS_URLS_REGEX = r'^/graphql/.*$'
 
 Q_CLUSTER = {
@@ -90,7 +115,10 @@ Q_CLUSTER = {
         'host': os.environ.get('REDIS_HOST', default='localhost'),
         'port': os.environ.get('REDIS_PORT', default=6379),
         'db': 0,
-    }
+    },
+    'catch_up': False,
+    'sync': False,
+    'django_redis': True, 
 }
 
 TEMPLATES = [
@@ -202,6 +230,12 @@ LOGGING = {
             'filename': 'graphql-debug.log',
             'formatter': 'verbose',
         },
+        'affiliate_file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': 'affiliate-tasks.log',
+            'formatter': 'verbose',
+        },
     },
     'loggers': {
         'ecommerce_platform.graphql': {
@@ -211,6 +245,11 @@ LOGGING = {
         },
         'graphene_django': {
             'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+        'affiliate_tasks': {
+            'handlers': ['console', 'affiliate_file'],
             'level': 'DEBUG',
             'propagate': True,
         },

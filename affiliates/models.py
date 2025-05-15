@@ -10,15 +10,15 @@ PLATFORM_CHOICES = [
 
 class AffiliateLink(models.Model):
     """Tracking links for affiliate marketing"""
-    product = models.ForeignKey(Product, related_name='affiliate_links', on_delete=models.CASCADE)
+    product = models.ForeignKey('products.Product', on_delete=models.CASCADE, related_name='affiliate_links')
     platform = models.CharField(max_length=50, choices=PLATFORM_CHOICES)  # e.g., 'amazon', 'ebay'
     
     # Platform-specific IDs
     platform_id = models.CharField(max_length=100)  # e.g., ASIN for Amazon
     
     # Link details
-    original_url = models.URLField(max_length=500)
-    affiliate_url = models.URLField(max_length=1000)
+    original_url = models.TextField()
+    affiliate_url = models.TextField()
     
     # Performance tracking
     clicks = models.IntegerField(default=0)

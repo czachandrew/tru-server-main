@@ -9,6 +9,14 @@ PRODUCT_STATUS_CHOICES = [
     ('pending', 'Pending')
 ]
 
+PRODUCT_SOURCE_CHOICES = [
+    ('amazon', 'Amazon'),
+    ('web_scrape', 'Web Scrape'),
+    ('partner_import', 'Partner Import'),
+    ('manual', 'Manual Entry'),
+    ('user_contributed', 'User Contributed')
+]
+
 class Manufacturer(models.Model):
     """Brand or manufacturer information"""
     name = models.CharField(max_length=255, unique=True)
@@ -70,6 +78,7 @@ class Product(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     status = models.CharField(max_length=20, choices=PRODUCT_STATUS_CHOICES, default='active')
+    source = models.CharField(max_length=20, choices=PRODUCT_SOURCE_CHOICES, default='manual')
 
     # Add this new field
     is_featured = models.BooleanField(default=False)

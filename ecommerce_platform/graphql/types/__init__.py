@@ -1,4 +1,14 @@
 import graphene
+# Make sure to import all your types here
+from .user import UserType, UserProfileType
+# Import your ProductType - adjust the path as needed
+from .product import ProductType
+# Import any other types you need
+from .scalar import JSONScalar
+from .offer import OfferType, VendorType
+from .affiliate import AffiliateLinkType
+from .cart import CartType, CartItemType
+
 
 # Create the response objects first
 class ProductExistsResponse(graphene.ObjectType):
@@ -22,3 +32,4 @@ def get_affiliate_types():
 def get_cart_types():
     from .cart import CartType, CartItemType, UserType
     return CartType, CartItemType, UserType
+

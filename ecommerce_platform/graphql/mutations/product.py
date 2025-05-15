@@ -2,7 +2,8 @@ import graphene
 from graphql import GraphQLError
 from django.db import transaction
 from products.models import Product, Manufacturer, Category, ProductCategory
-from ..types import ProductType, JSONScalar
+from ..types.product import ProductType
+from ..types.scalar import JSONScalar
 
 class ProductInput(graphene.InputObjectType):
     name = graphene.String(required=True)
@@ -188,7 +189,8 @@ class CreateProductFromAmazon(graphene.Mutation):
                     part_number=input.part_number,
                     main_image=input.image or "",
                     additional_images=[],
-                    status="active"
+                    status="active",
+                    source="amazon"
                 )
                 
                 # Handle category

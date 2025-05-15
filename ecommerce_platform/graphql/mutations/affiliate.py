@@ -3,12 +3,28 @@ from graphql import GraphQLError
 from products.models import Product
 from affiliates.models import AffiliateLink
 from ..types import AffiliateLinkType
+import logging
+from django_q.tasks import async_task
+import json
+import redis
+from django.conf import settings
 
 class AffiliateLinkInput(graphene.InputObjectType):
     product_id = graphene.ID(required=True)
     platform = graphene.String(required=True)
     platform_id = graphene.String(required=True)
     original_url = graphene.String(required=True)
+
+class ProductInput(graphene.InputObjectType):
+    """Input type for product data"""
+    name = graphene.String()
+    partNumber = graphene.String()
+    manufacturer = graphene.String()
+    description = graphene.String()
+    mainImage = graphene.String()
+    price = graphene.String()
+    sourceUrl = graphene.String()
+    technicalDetails = graphene.JSONString()
 
 class CreateAffiliateLink(graphene.Mutation):
     class Arguments:
@@ -40,47 +56,96 @@ class CreateAffiliateLink(graphene.Mutation):
 class CreateAmazonAffiliateLink(graphene.Mutation):
     class Arguments:
         asin = graphene.String(required=True)
-        product_id = graphene.ID()
+        productId = graphene.String(required=True)
+        currentUrl = graphene.String(required=False)
+        productData = ProductInput(required=False)
     
-    affiliate_link = graphene.Field(AffiliateLinkType)
+    # Return fields that match the Chrome extension's expectations
+    taskId = graphene.String()
+    affiliateUrl = graphene.String()
+    status = graphene.String()
+    message = graphene.String()
     
     @staticmethod
-    def mutate(root, info, asin, product_id=None):
+    def mutate(root, info, asin, productId=None, currentUrl=None, productData=None):
         try:
-            # If product_id is not provided, check if product exists with this ASIN
-            if not product_id:
-                try:
-                    existing_link = AffiliateLink.objects.get(
-                        platform='amazon',
-                        platform_id=asin
-                    )
-                    return CreateAmazonAffiliateLink(affiliate_link=existing_link)
-                except AffiliateLink.DoesNotExist:
-                    raise GraphQLError("No product found for this ASIN. Please create product first.")
+            logger = logging.getLogger('affiliate_tasks')
+            logger.info(f"CreateAmazonAffiliateLink called with: asin={asin}, productId={productId}, currentUrl={currentUrl}")
             
-            product = Product.objects.get(pk=product_id)
+            if productData:
+                logger.info(f"Product data: name={productData.name}, manufacturer={productData.manufacturer}")
             
-            # Create basic affiliate link
-            affiliate_link = AffiliateLink(
-                product=product,
-                platform='amazon',
-                platform_id=asin,
-                original_url=f"https://www.amazon.com/dp/{asin}",
-                affiliate_url='',  # Will be populated by background task
-                is_active=True
-            )
-            affiliate_link.save()
-            
-            # Queue background task to generate actual affiliate URL
-            from django_q.tasks import async_task
-            async_task('affiliates.tasks.generate_amazon_affiliate_url', 
-                      affiliate_link.id, asin)
-            
-            return CreateAmazonAffiliateLink(affiliate_link=affiliate_link)
-        except Product.DoesNotExist:
-            raise GraphQLError(f"Product with ID {product_id} not found")
+            # Special handling for 'new_product' product_id from Chrome extension
+            if productId == 'new_product' and productData:
+                logger.info("New product creation requested")
+                
+                # Queue task to generate affiliate URL and create product
+                logger.info(f"Queueing task to generate affiliate URL for ASIN: {asin}")
+                task_id = async_task(
+                    'affiliates.tasks.generate_standalone_amazon_affiliate_url', 
+                    asin, 
+                    productData.sourceUrl or f"https://www.amazon.com/dp/{asin}"
+                )
+                logger.info(f"Queued task ID: {task_id}")
+                
+                # Store product data in Redis
+                redis_kwargs = get_redis_kwargs()
+                r = redis.Redis(**redis_kwargs)
+                
+                # Store all product data with the task_id
+                product_data_dict = {
+                    "asin": asin,
+                    "name": productData.name,
+                    "description": productData.description,
+                    "mainImage": productData.mainImage,
+                    "manufacturer": productData.manufacturer,
+                    "partNumber": productData.partNumber or asin,
+                    "price": productData.price,
+                    "sourceUrl": productData.sourceUrl,
+                    "technicalDetails": productData.technicalDetails
+                }
+                r.set(f"pending_product_data:{task_id}", json.dumps(product_data_dict), ex=86400)
+                
+                return CreateAmazonAffiliateLink(
+                    taskId=task_id,
+                    affiliateUrl="pending",
+                    status="processing",
+                    message="Affiliate link is being generated"
+                )
+            elif productId == 'temporary':
+                # Handle the old case for backward compatibility
+                logger.info("Temporary product ID detected - returning placeholder")
+                
+                task_id = async_task(
+                    'affiliates.tasks.generate_standalone_amazon_affiliate_url', 
+                    asin, 
+                    currentUrl or f"https://www.amazon.com/dp/{asin}"
+                )
+                logger.info(f"Queued task ID: {task_id}")
+                
+                return CreateAmazonAffiliateLink(
+                    taskId=task_id,
+                    affiliateUrl="pending",
+                    status="processing",
+                    message="Affiliate link is being generated"
+                )
+            else:
+                return CreateAmazonAffiliateLink(
+                    taskId=None,
+                    affiliateUrl=None,
+                    status="error",
+                    message="Invalid productId specified"
+                )
+                
         except Exception as e:
-            raise GraphQLError(str(e))
+            tb = traceback.format_exc()
+            logger.error(f"Error in CreateAmazonAffiliateLink: {str(e)}\n{tb}")
+            return CreateAmazonAffiliateLink(
+                taskId=None,
+                affiliateUrl=None,
+                status="error",
+                message=str(e)
+            )
 
 class UpdateAffiliateLink(graphene.Mutation):
     class Arguments:

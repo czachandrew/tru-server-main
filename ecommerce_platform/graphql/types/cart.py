@@ -2,6 +2,7 @@ import graphene
 from graphene_django import DjangoObjectType
 from store.models import Cart, CartItem
 from django.contrib.auth.models import User
+from .user import UserType
 
 class CartItemType(DjangoObjectType):
     total_price = graphene.Float()
@@ -31,7 +32,3 @@ class CartType(DjangoObjectType):
     def resolve_total_price(self, info):
         return sum(item.quantity * item.offer.selling_price for item in self.items.all())
 
-class UserType(DjangoObjectType):
-    class Meta:
-        model = User
-        fields = ("id", "username", "email") 
