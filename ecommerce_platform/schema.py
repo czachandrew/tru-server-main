@@ -14,25 +14,51 @@ from django_q.tasks import async_task  # Add this import
 import redis
 import traceback  # Add this import
 from affiliates.tasks import generate_standalone_amazon_affiliate_url  # Add this import
+from graphene import relay  # Add this import for relay
+import uuid
+from django.utils.text import slugify
+import re
+from collections import Counter
+from functools import lru_cache
+import nltk
+from nltk.corpus import stopwords
+from django_q.tasks import async_task
+import json
+import redis
+import logging
+from django.conf import settings
 
-from products.models import Product as ProductModel, Category, Manufacturer as ManufacturerModel
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
+import os
+import datetime
+
+# from .graphql.types.scalars import JSONScalar
+
+# Import all models with clear namespacing
+from products.models import Product as ProductModel
+from products.models import Category as CategoryModel
+from products.models import Manufacturer as ManufacturerModel
 from offers.models import Offer as OfferModel
-from vendors.models import Vendor
+from vendors.models import Vendor as VendorModel
 from affiliates.models import AffiliateLink as AffiliateLinkModel
 from store.models import Cart, CartItem
-from ecommerce_platform.graphql.types.product import Product, Manufacturer
+from users.models import UserProfile
+
+# Import GraphQL types separately
 from .graphql.types.user import UserType
+from .graphql.types.cart import CartType, CartItemType
+from .graphql.types.product import ProductType, CategoryType, ManufacturerType
+from .graphql.types.affiliate import AffiliateLinkType
+from .graphql.types.user import UserProfileType
 from .graphql.mutations.auth import AuthMutation
 from .graphql.mutations.product import ProductMutation
 from .graphql.mutations.affiliate import AffiliateMutation, CreateAmazonAffiliateLink
 from .graphql.mutations.cart import CartMutation
 from graphql_jwt.decorators import login_required
 from graphql_jwt.middleware import JSONWebTokenMiddleware
-from users.models import UserProfile
-
-# Custom Scalars
-from graphene.types.scalars import Scalar
-from graphene.types.datetime import DateTime
 
 # Import the GraphQL types from your types directory
 from ecommerce_platform.graphql.types.affiliate import AffiliateLinkType
@@ -42,93 +68,27 @@ User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
-class JSONScalar(Scalar):
-    """JSON Scalar Type"""
-    @staticmethod
-    def serialize(value):
-        return value
-    
-    @staticmethod
-    def parse_literal(node):
-        return node.value
-    
-    @staticmethod
-    def parse_value(value):
-        return json.loads(value)
+# Create a custom debug logger that writes to a specific file
+debug_logger = logging.getLogger('debug_search')
+debug_logger.setLevel(logging.DEBUG)
 
-# Type Definitions
-class Product(DjangoObjectType):
-    class Meta:
-        model = ProductModel
-        fields = "__all__"
-        name = "Product"
-    
-    # GraphQL expects camelCase but Django uses snake_case
-    mainImage = graphene.String(source='main_image')
-    additionalImages = graphene.List(graphene.String, source='additional_images')
-    partNumber = graphene.String(source='part_number')
-    dimensions = graphene.Field('ecommerce_platform.schema.Dimensions')
-    
-    def resolve_dimensions(self, info):
-        return self.dimensions or {}
+# Create logs directory if it doesn't exist
+logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+os.makedirs(logs_dir, exist_ok=True)
 
-class CategoryType(DjangoObjectType):
-    class Meta:
-        model = Category
-        fields = "__all__"
+# Create a file handler with today's date in the filename
+today = datetime.datetime.now().strftime('%Y-%m-%d')
+log_file = os.path.join(logs_dir, f'search_debug_{today}.log')
 
-class ManufacturerType(DjangoObjectType):
-    class Meta:
-        model = ManufacturerModel
-        fields = "__all__"
-
-# class OfferType(DjangoObjectType):
-#     class Meta:
-#         model = Offer
-#         fields = "__all__"
-
-# class VendorType(DjangoObjectType):
-#     class Meta:
-#         model = Vendor
-#         fields = "__all__"
-
-class AffiliateLinkType(DjangoObjectType):
-    class Meta:
-        model = AffiliateLinkModel
-        fields = "__all__"
-
-class CartType(DjangoObjectType):
-    class Meta:
-        model = Cart
-        fields = "__all__"
-    
-    total_items = graphene.Int()
-    total_price = graphene.Float()
-    
-    def resolve_total_items(self, info):
-        return sum(item.quantity for item in self.items.all())
-    
-    def resolve_total_price(self, info):
-        return sum(item.quantity * item.offer.selling_price for item in self.items.all())
-
-class CartItemType(DjangoObjectType):
-    class Meta:
-        model = CartItem
-        fields = "__all__"
-    
-    total_price = graphene.Float()
-    
-    def resolve_total_price(self, info):
-        return self.quantity * self.offer.selling_price
-
-class UserProfileType(DjangoObjectType):
-    class Meta:
-        model = UserProfile
-        fields = "__all__"
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
+file_handler.setFormatter(formatter)
+debug_logger.addHandler(file_handler)
 
 class ProductExistsResponse(graphene.ObjectType):
     exists = graphene.Boolean()
-    product = graphene.Field(Product)
+    product = graphene.Field(ProductType)
     affiliate_link = graphene.Field(AffiliateLinkType)
     needs_affiliate_generation = graphene.Boolean()
     message = graphene.String()
@@ -141,7 +101,7 @@ class ProductInput(graphene.InputObjectType):
     description = graphene.String()
     partNumber = graphene.String()
     mainImage = graphene.String()
-    price = graphene.String()
+    price = graphene.Float()
     sourceUrl = graphene.String()
     technicalDetails = graphene.JSONString()
 
@@ -166,10 +126,22 @@ class AffiliateLinkInput(graphene.InputObjectType):
     platform_id = graphene.String(required=True)
     original_url = graphene.String(required=True)
 
+# First, ensure ProductType has a connection
+class ProductType(DjangoObjectType):
+    class Meta:
+        model = ProductModel
+        interfaces = (relay.Node, )  # This enables the connection
+        filter_fields = {
+            'name': ['exact', 'icontains', 'istartswith'],
+            'part_number': ['exact', 'icontains'],
+            # add other fields as needed
+        }
+        connection_class = relay.Connection
+
 # Query Class
 class Query(graphene.ObjectType):
     # Product queries
-    product = graphene.Field(Product, id=graphene.ID(), part_number=graphene.String())
+    product = graphene.Field(ProductType, id=graphene.ID(), part_number=graphene.String())
     products = graphene.Field(
         'ecommerce_platform.schema.ProductConnection',
         search=graphene.String(),
@@ -206,7 +178,7 @@ class Query(graphene.ObjectType):
     
     # Add the featured products query
     featured_products = graphene.List(
-        Product,
+        ProductType,
         limit=graphene.Int()
     )
     
@@ -221,12 +193,12 @@ class Query(graphene.ObjectType):
     # Add this endpoint for debugging
     current_user_debug = graphene.Field(UserType, description="Debug endpoint for user auth")
     
-    # Add this new field
-    products_search = graphene.Field(
-        'ecommerce_platform.schema.RelayStyleProductConnection',
-        term=graphene.String(),
-        part_number=graphene.String(),
-        max_price=graphene.String()
+    # Change products_search to use relay.ConnectionField
+    products_search = DjangoFilterConnectionField(
+        ProductType,
+        term=graphene.String(required=True),
+        asin=graphene.String(),
+        max_price=graphene.Float()
     )
     
     # New search queries
@@ -280,11 +252,18 @@ class Query(graphene.ObjectType):
         return queryset
     
     def resolve_product(self, info, id=None, part_number=None):
+        """Find a single product by ID or part number"""
+        product = None
         if id:
-            return ProductModel.objects.get(pk=id)
-        if part_number:
-            return ProductModel.objects.get(part_number=part_number)
-        return None
+            product = ProductModel.objects.get(pk=id)
+        elif part_number:
+            product = ProductModel.objects.get(part_number=part_number)
+        
+        if product:
+            # Ensure this product has an Amazon affiliate link if needed
+            ensure_product_has_amazon_affiliate_link(product)
+        
+        return product
     
     def resolve_products(self, info, search=None, categoryId=None, manufacturerId=None, limit=None, offset=None):
         query = ProductModel.objects.all()
@@ -317,11 +296,11 @@ class Query(graphene.ObjectType):
     
     def resolve_categories(self, info, parent_id=None):
         if parent_id:
-            return Category.objects.filter(parent_id=parent_id)
-        return Category.objects.filter(parent__isnull=True)
+            return CategoryModel.objects.filter(parent_id=parent_id)
+        return CategoryModel.objects.filter(parent__isnull=True)
     
     def resolve_category(self, info, id):
-        return Category.objects.get(pk=id)
+        return CategoryModel.objects.get(pk=id)
     
     def resolve_manufacturers(self, info):
         return ManufacturerModel.objects.all()
@@ -368,7 +347,7 @@ class Query(graphene.ObjectType):
                     affiliate_link.save()
                     
                     # Queue background task to generate actual affiliate URL
-                    from django_q.tasks import async_task
+
                     async_task('affiliates.tasks.generate_amazon_affiliate_url', 
                               affiliate_link.id, asin)
                     
@@ -495,51 +474,230 @@ class Query(graphene.ObjectType):
             logger.error(f"🔍 Error decoding: {str(e)}")
             return None
 
-    def resolve_products_search(self, info, term=None, part_number=None, max_price=None):
-        products = ProductModel.objects.all()
+    def resolve_products_search(self, info, term, asin=None, max_price=None, **kwargs):
+        """
+        Search for products in the database using the search term or part number.
+        """
+        # Log incoming request data
+        debug_logger.info(f"Incoming request data: term={term}, asin={asin}, max_price={max_price}, kwargs={kwargs}")
+
+        # Use the built-in filter fields from DjangoFilterConnectionField
+        part_number = kwargs.get('part_number_Iexact', None) or kwargs.get('part_number_Icontains', None)
+        manufacturer_id = kwargs.get('manufacturer_Id', None)
         
-        # Apply filters
+        debug_logger.info(f"Extracted filters - part_number: {part_number}, manufacturer_id: {manufacturer_id}")
+        
+        # Start with all products
+        qs = ProductModel.objects.all().order_by('name')
+        
+        # STEP 1: Handle ASIN for affiliate links
+        if asin:
+            debug_logger.info(f"Checking affiliate links for ASIN: {asin}")
+            affiliate_links = AffiliateLinkModel.objects.filter(platform_id=asin, platform='amazon')
+            if not affiliate_links.exists():
+                debug_logger.info(f"No existing affiliate link for ASIN: {asin}, creating new link")
+                try:
+                    from django_q.tasks import async_task
+                    # Pass only the ASIN to the task function
+                    async_task('affiliates.tasks.generate_standalone_amazon_affiliate_url', asin, "http://example.com")  # Replace with actual URL if needed
+                    debug_logger.info(f"Created affiliate link generation task for ASIN: {asin}")
+                except Exception as e:
+                    debug_logger.error(f"Error creating affiliate link task for ASIN: {asin}: {str(e)}")
+            else:
+                debug_logger.info(f"Existing affiliate link found for ASIN: {asin}")
+
+        # STEP 2: Try exact part number match if provided
         if part_number:
-            products = products.filter(part_number__icontains=part_number)
-        elif term:
-            products = products.filter(
-                Q(name__icontains=term) | 
-                Q(description__icontains=term) |
-                Q(part_number__icontains=term)
-            )
+            debug_logger.info(f"Searching for exact match on provided part number: {part_number}")
+            part_match = ProductModel.objects.filter(part_number__iexact=part_number).first()
+            if part_match:
+                debug_logger.info(f"FOUND EXACT PART NUMBER MATCH: {part_match.id} - {part_match.name}")
+                # Log detailed product information
+                debug_logger.info(f"Exact Match Details: ID={part_match.id}, Name={part_match.name}, Part Number={part_match.part_number}, Manufacturer={part_match.manufacturer.name if part_match.manufacturer else 'None'}, Description={part_match.description[:100]}...")
+                # Log the response structure before returning
+                response = [{
+                    'product_id': part_match.id,
+                    'name': part_match.name,
+                    'part_number': part_match.part_number,
+                    'manufacturer': part_match.manufacturer.name if part_match.manufacturer else 'None',
+                    'offers': [{'price': offer.selling_price, 'vendor': offer.vendor.name} for offer in OfferModel.objects.filter(product=part_match)],
+                    'affiliate_links': [{'url': link.url} for link in AffiliateLinkModel.objects.filter(product=part_match)],
+                }]
+                debug_logger.info(f"Response structure for exact part number match: {json.dumps(response, indent=2)}")
+                return response
         
-        # Type conversion is no longer needed since we're expecting a Float
+        # STEP 3: If part_number wasn't provided or didn't match, try to extract from term
+        extracted_part_number = None
+        if term and not part_number:
+            # Extract potential part numbers from the term
+            paren_matches = re.findall(r'\(([A-Za-z0-9\-_]+)\)', term)
+            if paren_matches:
+                extracted_part_number = paren_matches[0]
+                debug_logger.info(f"Extracted part number from parentheses: {extracted_part_number}")
+                
+                # Try exact match with the extracted part number
+                part_match = ProductModel.objects.filter(part_number__iexact=extracted_part_number).first()
+                if part_match:
+                    debug_logger.info(f"FOUND MATCH FOR EXTRACTED PART NUMBER: {part_match.id} - {part_match.name}")
+                    # Log detailed product information
+                    debug_logger.info(f"Exact Match Details: ID={part_match.id}, Name={part_match.name}, Part Number={part_match.part_number}, Manufacturer={part_match.manufacturer.name if part_match.manufacturer else 'None'}, Description={part_match.description[:100]}...")
+                    # Log the response structure before returning
+                    response = [{
+                        'product_id': part_match.id,
+                        'name': part_match.name,
+                        'part_number': part_match.part_number,
+                        'manufacturer': part_match.manufacturer.name if part_match.manufacturer else 'None',
+                        'offers': [{'price': offer.selling_price, 'vendor': offer.vendor.name} for offer in OfferModel.objects.filter(product=part_match)],
+                        'affiliate_links': [{'url': link.url} for link in AffiliateLinkModel.objects.filter(product=part_match)],
+                    }]
+                    debug_logger.info(f"Response structure for exact match: {json.dumps(response, indent=2)}")
+                    return response
+                
+                # Use icontains for more flexible matching
+                debug_logger.info(f"Searching for products with part number containing: {extracted_part_number}")
+                qs = qs.filter(part_number__icontains=extracted_part_number)
+        
+        # STEP 4: Use manufacturer filtering if provided
+        manufacturer_filter_applied = False
+        if manufacturer_id:
+            debug_logger.info(f"Filtering by provided manufacturer: {manufacturer_id}")
+            qs = qs.filter(manufacturer__id=manufacturer_id)
+            manufacturer_filter_applied = True
+        
+        # STEP 5: Use term-based search as final fallback
+        if term:
+            search_term = term.lower()
+            
+            # If we have an extracted part but no direct match, try to find similar products
+            if extracted_part_number and not manufacturer_filter_applied:
+                manufacturers = ["apc", "schneider", "dell", "hp", "lenovo", "apple", "samsung", "logitech", 
+                              "microsoft", "cisco", "netgear", "asus", "intel", "amd", "corsair", 
+                              "belkin", "tripp lite", "sony", "lg", "western digital", "seagate"]
+                
+                for mfr in manufacturers:
+                    if mfr in search_term:
+                        debug_logger.info(f"Extracted manufacturer from term: {mfr}")
+                        mfr_qs = qs.filter(manufacturer__name__icontains=mfr)
+                        if len(extracted_part_number) >= 4:
+                            debug_logger.info(f"Searching for products with part number containing: {extracted_part_number}")
+                            mfr_part_qs = mfr_qs.filter(part_number__icontains=extracted_part_number)
+                            if mfr_part_qs.exists():
+                                debug_logger.info(f"Found {mfr_part_qs.count()} products matching manufacturer and part number")
+                                # Collect products for response
+                                qs = mfr_part_qs
+                                break
+            # Extract significant terms from the database
+            significant_terms = get_significant_terms()
+            
+            # Analyze the search query to find matching significant terms
+            words_in_search = set(re.findall(r'\b\w+\b', search_term))
+            
+            # Find significant terms present in the search query
+            matching_terms = [word for word in words_in_search if word in significant_terms]
+            matching_terms.sort(key=lambda x: significant_terms[x], reverse=True)
+            
+            debug_logger.info(f"Found {len(matching_terms)} significant terms in search: {matching_terms[:5]}")
+            
+            # Build term queries based on matching significant terms
+            term_queries = Q()
+            for term in matching_terms[:5]:  # Use top 5 most significant terms
+                term_queries |= Q(name__icontains=term) | Q(description__icontains=term)
+            
+            # Apply the term filtering
+            if term_queries:
+                qs = qs.filter(term_queries)
+                debug_logger.info(f"Applied term-based filtering, resulting in {qs.count()} products")
+        
+        # STEP 6: Apply price filter
         if max_price is not None:
-            products = products.filter(offers__selling_price__lte=max_price)
+            from decimal import Decimal
+            try:
+                max_price_decimal = Decimal(str(max_price))
+                qs = qs.filter(offers__selling_price__lte=max_price_decimal).distinct()
+            except (ValueError, TypeError):
+                pass
         
-        # Create edges with nodes
-        edges = []
-        for product in products[:50]:  # Limit to 50 items
-            edge = ProductEdge(
-                node=product,
-                cursor=f"cursor-{product.id}"  # Simple cursor implementation
-            )
-            edges.append(edge)
+        # STEP 7: Handle affiliate link creation if no products found
+        qs = qs.distinct()
+        product_count = qs.count()
+        debug_logger.info(f"Found {product_count} products matching the search criteria")
         
-        # Create page info
-        has_next = products.count() > 50
-        page_info = PageInfo(
-            hasNextPage=has_next,
-            hasPreviousPage=False,  # First page
-            startCursor=edges[0].cursor if edges else "",
-            endCursor=edges[-1].cursor if edges else ""
-        )
+        if product_count == 0:
+            try:
+                debug_logger.info(f"No compatible products found, creating affiliate link for original product")
+                
+                # Use provided ASIN if available
+                if not part_number and extracted_part_number:
+                    if len(extracted_part_number) == 10:
+                        debug_logger.info(f"Using extracted part number as potential ASIN: {extracted_part_number}")
+                        from django_q.tasks import async_task
+                        import uuid
+                        task_id = f"amazon-{uuid.uuid4().hex[:8]}"
+                        result = async_task('affiliates.tasks.generate_standalone_amazon_affiliate_url', 
+                                  task_id, extracted_part_number)
+                        debug_logger.info(f"Created affiliate link generation task {task_id} for potential ASIN")
+            except Exception as e:
+                debug_logger.error(f"Error creating affiliate link task: {str(e)}")
         
-        return RelayStyleProductConnection(
-            edges=edges,
-            pageInfo=page_info
-        )
+        # Detailed logging for results
+        if product_count > 0:
+            debug_logger.info(f"==== SEARCH RESULTS ====")
+            debug_logger.info(f"Found {product_count} matching products:")
+            
+            for i, product in enumerate(qs[:10]):
+                offers = list(OfferModel.objects.filter(product=product).select_related('vendor'))
+                
+                debug_logger.info(f"RESULT #{i+1}: Product ID: {product.id}")
+                debug_logger.info(f"  - Name: {product.name}")
+                debug_logger.info(f"  - Part Number: {product.part_number}")
+                debug_logger.info(f"  - Manufacturer: {product.manufacturer.name if product.manufacturer else 'None'}")
+                debug_logger.info(f"  - Description: {product.description[:100]}..." if product.description else "  - Description: None")
+                
+                debug_logger.info(f"  - Offers: {len(offers)}")
+                for offer in offers:
+                    debug_logger.info(f"    * Price: ${offer.selling_price}, Vendor: {offer.vendor.name if offer.vendor else 'None'}")
+                
+                affiliate_links = list(AffiliateLinkModel.objects.filter(product=product))
+                debug_logger.info(f"  - Affiliate Links: {len(affiliate_links)}")
+                for link in affiliate_links:
+                    debug_logger.info(f"    * {link.platform}: {link.original_url}")
+            
+            if product_count > 10:
+                debug_logger.info(f"... and {product_count - 10} more products (truncated log)")
+        else:
+            debug_logger.info("NO PRODUCTS FOUND IN DATABASE")
+        
+        debug_logger.info(f"==== PRODUCT SEARCH END ====")
+        
+        # Log the search results
+        debug_logger.info(f"Found {qs.count()} products matching the search criteria")
+
+        # Prepare the response
+        response = []
+        for product in qs:
+            offers = OfferModel.objects.filter(product=product)
+            affiliate_links = AffiliateLinkModel.objects.filter(product=product)
+            
+            response.append({
+                'product_id': product.id,
+                'name': product.name,
+                'part_number': product.part_number,
+                'manufacturer': product.manufacturer.name if product.manufacturer else 'None',
+                'offers': [{'price': offer.selling_price, 'vendor': offer.vendor.name} for offer in offers],
+                'affiliate_links': [{'url': link.url} for link in affiliate_links],
+            })
+            debug_logger.info(f"Complete response structure in loop: {json.dumps(response, indent=2)}")
+
+        # Log the complete response structure
+            debug_logger.info(f"Complete response structure: {json.dumps(response, indent=2)}")
+
+        return response
 
     def resolve_search_by_asin(self, info, asin, limit=10):
         """
         Find products that have affiliate links with the specified Amazon ASIN
         """
-        logger.error(f"Searching for products with ASIN: {asin}")
+        debug_logger.error(f"Searching for products with ASIN: {asin}")
         
         # Find affiliate links with the provided ASIN
         direct_match_links = AffiliateLinkModel.objects.filter(
@@ -547,12 +705,12 @@ class Query(graphene.ObjectType):
             platform_id=asin
         )
         
-        logger.error(f"Direct match query found {direct_match_links.count()} links for ASIN={asin}")
+        debug_logger.error(f"Direct match query found {direct_match_links.count()} links for ASIN={asin}")
         
         # If no direct matches, try with flexible matching
         if direct_match_links.count() == 0:
             cleaned_asin = asin.strip().upper()
-            logger.error(f"Trying flexible matching with cleaned ASIN: {cleaned_asin}")
+            debug_logger.error(f"Trying flexible matching with cleaned ASIN: {cleaned_asin}")
             
             direct_match_links = AffiliateLinkModel.objects.filter(
                 platform='amazon'
@@ -563,7 +721,7 @@ class Query(graphene.ObjectType):
                 models.Q(original_url__contains=cleaned_asin)
             )
             
-            logger.error(f"Flexible match found {direct_match_links.count()} links")
+            debug_logger.error(f"Flexible match found {direct_match_links.count()} links")
         
         # Collect product data
         results = []
@@ -572,21 +730,21 @@ class Query(graphene.ObjectType):
         for link in direct_match_links:
             try:
                 product = link.product
-                logger.error(f"Processing product: ID={product.id}, Name={product.name}")
+                debug_logger.error(f"Processing product: ID={product.id}, Name={product.name}")
                 
                 if product.id in seen_product_ids:
-                    logger.error(f"Skipping duplicate product ID: {product.id}")
+                    debug_logger.error(f"Skipping duplicate product ID: {product.id}")
                     continue
                     
                 seen_product_ids.add(product.id)
                 
                 # Get ALL affiliate links for this product
                 product_links = list(AffiliateLinkModel.objects.filter(product=product))
-                logger.error(f"Found {len(product_links)} affiliate links for product {product.id}")
+                debug_logger.error(f"Found {len(product_links)} affiliate links for product {product.id}")
                 
                 # Get ALL offers for this product
                 product_offers = list(OfferModel.objects.filter(product=product).select_related('vendor'))
-                logger.error(f"Found {len(product_offers)} offers for product {product.id}")
+                debug_logger.error(f"Found {len(product_offers)} offers for product {product.id}")
                 
                 # Create a complete result with all related data
                 result = ProductSearchResult(
@@ -601,19 +759,19 @@ class Query(graphene.ObjectType):
                 )
                 
                 # Log the structure to ensure it matches expectations
-                logger.error(f"Created ProductSearchResult for {product.id} with name={result.name}, part_number={result.part_number}")
+                debug_logger.error(f"Created ProductSearchResult for {product.id} with name={result.name}, part_number={result.part_number}")
                 
                 results.append(result)
-                logger.error(f"Added complete product to results: {product.id}")
+                debug_logger.error(f"Added complete product to results: {product.id}")
                 
                 if len(results) >= limit:
                     break
                     
             except Exception as e:
-                logger.error(f"Error processing link ID={link.id}: {str(e)}")
+                debug_logger.error(f"Error processing link ID={link.id}: {str(e)}")
         
         # Log what we found
-        logger.error(f"Returning {len(results)} complete results for ASIN: {asin}")
+        debug_logger.error(f"Returning {len(results)} complete results for ASIN: {asin}")
         
         # Return the complete results
         return results
@@ -628,8 +786,8 @@ class Query(graphene.ObjectType):
         
         results = []
         for product in products:
-            # Get all affiliate links for this product
-            product_links = list(AffiliateLinkModel.objects.filter(product=product))
+            # Ensure each product has an Amazon affiliate link if needed
+            product_links = ensure_product_has_amazon_affiliate_link(product)
             
             # Get all offers for this product
             product_offers = list(OfferModel.objects.filter(product=product).select_related('vendor'))
@@ -663,8 +821,8 @@ class Query(graphene.ObjectType):
         
         results = []
         for product in products:
-            # Get all affiliate links for this product
-            product_links = list(AffiliateLinkModel.objects.filter(product=product))
+            # Ensure this product has an Amazon affiliate link if needed
+            product_links = ensure_product_has_amazon_affiliate_link(product)
             
             # Get all offers for this product
             product_offers = list(OfferModel.objects.filter(product=product).select_related('vendor'))
@@ -684,10 +842,7 @@ class Query(graphene.ObjectType):
 
     def resolve_standalone_affiliate_url(self, info, task_id):
         """Get the status of a standalone affiliate URL generation task"""
-        import json
-        import redis
-        import logging
-        from django.conf import settings
+
         
         logger = logging.getLogger('affiliate_tasks')
         logger.info(f"Checking standalone affiliate URL for task_id: {task_id}")
@@ -740,14 +895,14 @@ class CreateProduct(graphene.Mutation):
     class Arguments:
         input = ProductInput(required=True)
     
-    product = graphene.Field(Product)
+    product = graphene.Field(ProductType)
     
     @staticmethod
     def mutate(root, info, input):
         manufacturer = ManufacturerModel.objects.get(pk=input.manufacturer_id)
         
         # Create the product
-        product = ProductModel(
+        product = ProductType(
             name=input.name,
             description=input.description,
             manufacturer=manufacturer,
@@ -765,7 +920,7 @@ class CreateProduct(graphene.Mutation):
         # Add categories if provided
         if input.category_ids:
             for category_id in input.category_ids:
-                category = Category.objects.get(pk=category_id)
+                category = CategoryModel.objects.get(pk=category_id)
                 product.categories.add(category)
         
         return CreateProduct(product=product)
@@ -775,13 +930,13 @@ class UpdateProduct(graphene.Mutation):
         id = graphene.ID(required=True)
         input = ProductInput(required=True)
     
-    product = graphene.Field(Product)
+    product = graphene.Field(ProductType)
     
     @staticmethod
     def mutate(root, info, id, input):
         try:
-            product = ProductModel.objects.get(pk=id)
-        except ProductModel.DoesNotExist:
+            product = ProductType.objects.get(pk=id)
+        except ProductType.DoesNotExist:
             raise GraphQLError(f"Product with ID {id} does not exist")
         
         # Update basic fields
@@ -818,7 +973,7 @@ class UpdateProduct(graphene.Mutation):
         if input.category_ids:
             product.categories.clear()
             for category_id in input.category_ids:
-                category = Category.objects.get(pk=category_id)
+                category = CategoryModel.objects.get(pk=category_id)
                 product.categories.add(category)
         
         return UpdateProduct(product=product)
@@ -827,15 +982,25 @@ class CreateProductFromAmazon(graphene.Mutation):
     class Arguments:
         input = AmazonProductInput(required=True)
     
-    product = graphene.Field(Product)
+    product = graphene.Field(ProductType)
     
     @staticmethod
     def mutate(root, info, input):
-        # Get or create manufacturer
-        manufacturer, created = ManufacturerModel.objects.get_or_create(
-            name=input.manufacturer_name,
-            defaults={'slug': input.manufacturer_name.lower().replace(' ', '-')}
-        )
+        # Get or create manufacturer with a unique slug
+        manufacturer_name = input.manufacturer_name
+        
+        try:
+            # First try to find by exact name
+            manufacturer = ManufacturerModel.objects.get(name__iexact=manufacturer_name)
+        except ManufacturerModel.DoesNotExist:
+            # Create new with a unique slug
+            base_slug = slugify(manufacturer_name)
+            unique_slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+            
+            manufacturer = ManufacturerModel.objects.create(
+                name=manufacturer_name,
+                slug=unique_slug
+            )
         
         # Create new product
         product = ProductModel(
@@ -843,7 +1008,7 @@ class CreateProductFromAmazon(graphene.Mutation):
             description=input.description,
             manufacturer=manufacturer,
             part_number=input.part_number,
-            slug=input.part_number.lower().replace(' ', '-'),
+            slug=f"{slugify(input.part_number)}-{uuid.uuid4().hex[:8]}",  # Unique product slug too
             main_image=input.image,
             status='active'
         )
@@ -851,17 +1016,19 @@ class CreateProductFromAmazon(graphene.Mutation):
         
         # Add to category if provided
         if input.category_name:
-            category, created = Category.objects.get_or_create(
+            category, created = CategoryModel.objects.get_or_create(
                 name=input.category_name,
                 defaults={
-                    'slug': input.category_name.lower().replace(' ', '-'),
+                    'slug': f"{slugify(input.category_name)}-{uuid.uuid4().hex[:8]}",
                     'is_visible': True
                 }
             )
             product.categories.add(category)
         
-        # Create affiliate link for Amazon
+        # Create affiliate link for Amazon 
+        # Make sure this is doing its job
         if input.asin and input.url:
+            logger.info(f"Creating affiliate link with ASIN: {input.asin} for product: {product.id}")
             affiliate_link = AffiliateLinkModel(
                 product=product,
                 platform='amazon',
@@ -872,10 +1039,31 @@ class CreateProductFromAmazon(graphene.Mutation):
             )
             affiliate_link.save()
             
+            # Async task to generate actual affiliate URL - make sure this task works
+            from django_q.tasks import async_task
+            task = async_task('affiliates.tasks.generate_amazon_affiliate_url', 
+                      affiliate_link.id, input.asin)
+            
+            logger.info(f"Queued affiliate link generation task: {task}")
+        else:
+            # If no ASIN but we have a part number, use that as fallback
+            logger.info(f"No ASIN provided, using part number {product.part_number} for affiliate link")
+            affiliate_link = AffiliateLinkModel(
+                product=product,
+                platform='amazon',
+                platform_id=product.part_number,
+                original_url=f"https://www.amazon.com/dp/{product.part_number}",
+                affiliate_url='',  # Will be populated by background task
+                is_active=True
+            )
+            affiliate_link.save()
+            
             # Async task to generate actual affiliate URL
             from django_q.tasks import async_task
-            async_task('affiliates.tasks.generate_amazon_affiliate_url', 
-                      affiliate_link.id, input.asin)
+            task = async_task('affiliates.tasks.generate_amazon_affiliate_url', 
+                      affiliate_link.id, product.part_number)
+            
+            logger.info(f"Queued affiliate link generation task: {task}")
         
         return CreateProductFromAmazon(product=product)
 
@@ -888,7 +1076,7 @@ class CreateAffiliateLink(graphene.Mutation):
     @staticmethod
     def mutate(root, info, input):
         try:
-            product = ProductModel.objects.get(pk=input.product_id)
+            product = ProductType.objects.get(pk=input.product_id)
             
             affiliate_link = AffiliateLinkModel(
                 product=product,
@@ -901,7 +1089,7 @@ class CreateAffiliateLink(graphene.Mutation):
             affiliate_link.save()
             
             return CreateAffiliateLink(affiliate_link=affiliate_link)
-        except ProductModel.DoesNotExist:
+        except ProductType.DoesNotExist:
             raise GraphQLError(f"Product with ID {input.product_id} not found")
         except Exception as e:
             raise GraphQLError(str(e))
@@ -1165,13 +1353,19 @@ class Dimensions(graphene.ObjectType):
     height = graphene.Float()
 
 # Create a pagination container for products
-class ProductConnection(graphene.ObjectType):
-    totalCount = graphene.Int()
-    items = graphene.List(Product)
+class ProductConnection(relay.Connection):
+    class Meta:
+        node = ProductType
+    
+    total_count = graphene.Int()
+    
+    @staticmethod
+    def resolve_total_count(root, info, **kwargs):
+        return root.length
 
 # Add this new class to support Relay-style connections
 class ProductEdge(graphene.ObjectType):
-    node = graphene.Field(Product)
+    node = graphene.Field(ProductType)
     cursor = graphene.String()
 
 class RelayStyleProductConnection(graphene.ObjectType):
@@ -1191,7 +1385,7 @@ class ProductSearchResult(graphene.ObjectType):
     part_number = graphene.String()
     description = graphene.String()
     main_image = graphene.String()
-    manufacturer = graphene.Field(Manufacturer)
+    manufacturer = graphene.Field(ManufacturerType)
     affiliate_links = graphene.List(AffiliateLinkType)
     offers = graphene.List(OfferType)
     
@@ -1210,5 +1404,86 @@ def get_redis_kwargs():
         redis_kwargs['password'] = settings.REDIS_PASSWORD
         
     return redis_kwargs
+
+# Add this helper function near the top of your file
+def ensure_product_has_amazon_affiliate_link(product):
+    """
+    Check if a product has an Amazon affiliate link, and create one if it doesn't.
+    Returns the list of all affiliate links for the product.
+    """
+    # Check for existing Amazon affiliate link first
+    amazon_link = AffiliateLinkModel.objects.filter(
+        product=product, 
+        platform='amazon'
+    ).first()
+    
+    # Get all affiliate links for this product
+    product_links = list(AffiliateLinkModel.objects.filter(product=product))
+    
+    # If we don't have an Amazon link already, create one if possible
+    if not amazon_link and product.part_number:
+        try:
+            logger.info(f"Creating new Amazon affiliate link for product {product.id} with part number {product.part_number}")
+            # Create a basic affiliate link that will be populated later
+            affiliate_link = AffiliateLinkModel(
+                product=product,
+                platform='amazon',
+                platform_id=product.part_number,
+                original_url=f"https://www.amazon.com/dp/{product.part_number}",
+                affiliate_url='',  # Will be populated by background task
+                is_active=True
+            )
+            affiliate_link.save()
+            
+            # Queue background task to generate actual affiliate URL
+            async_task('affiliates.tasks.generate_amazon_affiliate_url', 
+                      affiliate_link.id, product.part_number)
+            
+            # Add the new link to our list
+            product_links.append(affiliate_link)
+        except Exception as e:
+            logger.error(f"Failed to create affiliate link: {str(e)}")
+    
+    return product_links
+
+@lru_cache(maxsize=1)
+def get_significant_terms():
+    """
+    Analyze all products to find significant terms that indicate product categories.
+    Uses caching to avoid repeating this expensive operation.
+    """
+    logger.info("Analyzing product database to extract significant terms")
+    
+    # Get all product names and descriptions
+    all_products = ProductModel.objects.all()
+    all_text = " ".join([
+        (p.name + " " + (p.description or "")).lower() 
+        for p in all_products
+    ])
+    
+    # Tokenize and count terms
+    words = re.findall(r'\b\w+\b', all_text)
+    word_counts = Counter(words)
+    
+    # Remove common stop words
+    stop_words = set(stopwords.words('english'))
+    stop_words.update(['the', 'and', 'with', 'for', 'this', 'that', 'from'])
+    
+    # Find significant terms (frequent enough but not too common)
+    significant_terms = {}
+    total_products = all_products.count()
+    
+    for word, count in word_counts.items():
+        # Skip stop words and short words
+        if word in stop_words or len(word) < 3:
+            continue
+            
+        # Calculate significance - terms that appear in 0.1% to 20% of products
+        frequency = count / total_products
+        if 0.001 <= frequency <= 0.2:
+            significant_terms[word] = count
+    
+    logger.info(f"Extracted {len(significant_terms)} significant terms from product database")
+    return significant_terms
 
 schema = graphene.Schema(query=Query, mutation=Mutation)

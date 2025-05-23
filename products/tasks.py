@@ -1,9 +1,10 @@
 from django_q.tasks import async_task, schedule
 from django_q.models import Schedule
-from products.models import Product, Manufacturer
+from products.models import Product, Manufacturer, Category, ProductCategory
 from vendors.models import Vendor
 from offers.models import Offer
 import os
+from decimal import Decimal
 
 def process_batch(batch_data):
     """Process a batch of product data"""
@@ -17,11 +18,14 @@ def process_batch(batch_data):
                 defaults={'slug': item['manufacturer'].lower().replace(' ', '-')}
             )
             
-            # Clean and convert dimensional data
+            # Add logging to see what's happening
+            print(f"Processing product: {item['mfr_part']} from {manufacturer.name}")
+            
+            # Clean and convert dimensional data - convert Decimal to float for JSON storage
             dimensions = {
-                'length': clean_decimal(item.get('product_length')),
-                'width': clean_decimal(item.get('product_width')),
-                'height': clean_decimal(item.get('product_height'))
+                'length': float(clean_decimal(item.get('product_length')) or 0),
+                'width': float(clean_decimal(item.get('product_width')) or 0),
+                'height': float(clean_decimal(item.get('product_height')) or 0)
             }
             
             # Get or create product
@@ -32,11 +36,15 @@ def process_batch(batch_data):
                     'name': item['name'][:255],  # Truncate to max field length
                     'slug': item['mfr_part'].lower().replace(' ', '-'),
                     'description': item.get('description', ''),
-                    'specifications': {},
+                    'specifications': {},  # Empty dict initially
                     'weight': clean_decimal(item.get('product_weight')),
-                    'dimensions': dimensions
+                    'dimensions': dimensions,
+                    'status': 'active',  # Set default status
+                    'source': 'partner_import'  # Set source to match your enum
                 }
             )
+            
+            print(f"Product {'created' if created else 'updated'}: {product.name}")
             
             # If product exists, update fields that might have changed
             if not created:
@@ -59,28 +67,57 @@ def process_batch(batch_data):
             
             # Create or update offer - handle potential errors in price data
             if cost_price is not None:
-                # Calculate selling price with markup
-                selling_price = cost_price * 1.15 if cost_price else 0
+                # Calculate selling price with markup - use Decimal for multiplication
+                markup = Decimal('1.15')
+                selling_price = cost_price * markup if cost_price else Decimal('0')
                 
-                offer, _ = Offer.objects.update_or_create(
+                offer, offer_created = Offer.objects.update_or_create(
                     product=product,
                     vendor=vendor,
                     defaults={
                         'cost_price': cost_price,
                         'selling_price': selling_price,
-                        'msrp': msrp,
+                        'msrp': msrp or cost_price,  # Ensure msrp is not None
                         'vendor_sku': item.get('reseller_part', '')[:100],  # Truncate to field length
-                        'stock_quantity': stock_quantity
+                        'stock_quantity': stock_quantity,
+                        'is_in_stock': stock_quantity > 0
                     }
                 )
+                print(f"Offer {'created' if offer_created else 'updated'} for {product.name}")
+                
+                # Handle category if we have category information
+                if item.get('synnex_category_code'):
+                    try:
+                        # Create or get category
+                        category_name = f"Synnex-{item['synnex_category_code']}"
+                        category, _ = Category.objects.get_or_create(
+                            slug=category_name.lower().replace(' ', '-'),
+                            defaults={
+                                'name': category_name
+                            }
+                        )
+                        
+                        # Associate product with category
+                        ProductCategory.objects.get_or_create(
+                            product=product,
+                            category=category,
+                            defaults={'is_primary': True}
+                        )
+                        print(f"Added product to category: {category.name}")
+                    except Exception as cat_error:
+                        print(f"Error adding category: {str(cat_error)}")
+                
                 results["success"] += 1
             else:
                 results["errors"] += 1
                 results["error_messages"].append(f"Invalid price data for {item['mfr_part']}")
+                print(f"ERROR: Invalid price data for {item['mfr_part']}")
                 
         except Exception as e:
             results["errors"] += 1
-            results["error_messages"].append(f"Error processing {item.get('mfr_part', 'unknown')}: {str(e)}")
+            error_msg = f"Error processing {item.get('mfr_part', 'unknown')}: {str(e)}"
+            results["error_messages"].append(error_msg)
+            print(f"ERROR: {error_msg}")
     
     return f"Processed {len(batch_data)} items: {results['success']} successes, {results['errors']} errors"
 

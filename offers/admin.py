@@ -4,10 +4,10 @@ from .models import Offer
 @admin.register(Offer)
 class OfferAdmin(admin.ModelAdmin):
     list_display = ('id', 'product_name', 'vendor_name', 'selling_price', 'get_is_active')
-    list_filter = ('vendor',)
-    search_fields = ('product__name', 'vendor__name', 'reference_code')
+    list_filter = ('vendor', 'is_active')
+    search_fields = ('product__name', 'vendor__name', 'vendor_sku')
     raw_id_fields = ('product', 'vendor')
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at', 'availability_updated_at')
     
     def product_name(self, obj):
         return obj.product.name if obj.product else "No Product"
@@ -24,19 +24,19 @@ class OfferAdmin(admin.ModelAdmin):
     
     fieldsets = (
         (None, {
-            'fields': ('product', 'vendor', 'reference_code')
+            'fields': ('product', 'vendor', 'vendor_sku', 'vendor_url')
         }),
         ('Pricing', {
-            'fields': ('list_price', 'selling_price', 'promotion')
+            'fields': ('cost_price', 'selling_price', 'msrp')
         }),
         ('Inventory', {
-            'fields': ('shipping_info',)
+            'fields': ('stock_quantity', 'is_in_stock')
         }),
         ('Status', {
             'fields': ('is_active',)
         }),
         ('Timestamps', {
-            'fields': ('created_at', 'updated_at'),
+            'fields': ('created_at', 'updated_at', 'availability_updated_at'),
             'classes': ('collapse',)
         }),
     )

@@ -341,6 +341,53 @@ def check_stalled_standalone_task(task_id, asin):
     except Exception as e:
         logger.error(f"Error checking stalled standalone task: {str(e)}", exc_info=True)
 
+def generate_affiliate_from_search(task_id, search_term, search_key):
+    """
+    Generate an affiliate link based on a product search term.
+    This will search Amazon for the product and create an affiliate link.
+    """
+    logger = logging.getLogger('affiliate_tasks')
+    logger.info(f"Generating affiliate from search: '{search_term}', key: '{search_key}'")
+    
+    try:
+        # Use the Amazon search API or puppeteer to find the product
+        # For now, we'll just create a direct search URL
+        import urllib.parse
+        encoded_search = urllib.parse.quote(search_term)
+        
+        # This URL will redirect to Amazon search results
+        search_url = f"https://www.amazon.com/s?k={encoded_search}"
+        
+        # Generate affiliate link using the search URL
+        result = generate_standalone_amazon_affiliate_url(task_id, search_url)
+        
+        logger.info(f"Generated affiliate link for search: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error generating affiliate from search: {str(e)}")
+        
+        # Store error in Redis
+        import redis
+        import json
+        from django.conf import settings
+        
+        redis_kwargs = {
+            'host': getattr(settings, 'REDIS_HOST', 'localhost'),
+            'port': getattr(settings, 'REDIS_PORT', 6379),
+            'decode_responses': True
+        }
+        if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
+            redis_kwargs['password'] = settings.REDIS_PASSWORD
+            
+        r = redis.Redis(**redis_kwargs)
+        r.set(f"standalone_task_status:{task_id}", json.dumps({
+            "status": "error",
+            "message": str(e),
+            "url": None
+        }), ex=86400)
+        
+        return None
+
 def requeue_pending_affiliate_links(platform=None, limit=None):
     """
     Find all AffiliateLinks with empty affiliate_url or error messages and resubmit them to the queue

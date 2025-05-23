@@ -5,6 +5,7 @@ from django.conf import settings
 import json
 import redis
 import logging
+import uuid
 from affiliates.models import AffiliateLink
 from django.utils import timezone
 from products.models import Product, Manufacturer, Category
@@ -153,10 +154,19 @@ def standalone_callback(request, task_id):
             
             # Create manufacturer
             manufacturer_name = product_data.get('manufacturer', 'Amazon Marketplace')
-            manufacturer, _ = Manufacturer.objects.get_or_create(
-                name=manufacturer_name,
-                defaults={'slug': slugify(manufacturer_name)}
-            )
+            # Replace with this code:
+            try:
+                # First try to find by exact name
+                manufacturer = Manufacturer.objects.get(name__iexact=manufacturer_name)
+            except Manufacturer.DoesNotExist:
+                # Create with unique slug
+                base_slug = slugify(manufacturer_name)
+                unique_slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
+                
+                manufacturer = Manufacturer.objects.create(
+                    name=manufacturer_name,
+                    slug=unique_slug
+                )
             
             # Create product using data from Chrome extension
             product = Product.objects.create(
@@ -278,3 +288,28 @@ def store_result_in_redis(task_id, error=None):
     # Clean up
     r.delete(f"pending_standalone_task:{task_id}")
     r.delete(f"pending_standalone_original_url:{task_id}")
+
+@csrf_exempt  # Only if this endpoint doesn't need CSRF protection
+def check_affiliate_task_status(request):
+    """Endpoint for Chrome extension to check task status"""
+    task_id = request.GET.get('task_id')
+    
+    if not task_id:
+        return JsonResponse({"error": "No task_id provided"}, status=400)
+    
+    # Get Redis connection
+    redis_kwargs = get_redis_kwargs()
+    r = redis.Redis(**redis_kwargs)
+    
+    # Check if task result exists
+    task_status_json = r.get(f"standalone_task_status:{task_id}")
+    
+    if not task_status_json:
+        return JsonResponse({
+            "status": "pending",
+            "message": "Task is still processing"
+        })
+    
+    # Parse and return the result
+    task_status = json.loads(task_status_json)
+    return JsonResponse(task_status)

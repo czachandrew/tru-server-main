@@ -21,6 +21,7 @@ class Offer(models.Model):
     stock_quantity = models.IntegerField(default=0)
     is_in_stock = models.BooleanField(default=True)
     availability_updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
     
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)

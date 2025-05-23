@@ -21,4 +21,4 @@ class UserType(DjangoObjectType):
 class UserProfileType(DjangoObjectType):
     class Meta:
         model = UserProfile
-        fields = ('id', 'user', 'phone', 'company', 'preferred_categories', 'created_at', 'updated_at') 
+        fields = "__all__"

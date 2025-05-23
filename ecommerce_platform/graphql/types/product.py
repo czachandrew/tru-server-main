@@ -16,25 +16,28 @@ class Product(DjangoObjectType):
             "affiliate_links"
         )
 
-class Category(DjangoObjectType):
-    class Meta:
-        model = CategoryModel
-        name = "Category"
-        fields = (
-            "id", "name", "slug", "description", "parent", 
-            "image", "display_order", "is_visible", "children"
-        )
-
-class Manufacturer(DjangoObjectType):
-    class Meta:
-        model = ManufacturerModel
-        name = "Manufacturer"
-        fields = (
-            "id", "name", "slug", "logo", "website", 
-            "description", "products"
-        )
-
 class ProductType(DjangoObjectType):
     class Meta:
         model = ProductModel
-        fields = "__all__" 
+        fields = "__all__"
+        name = "Product"
+    
+    # GraphQL expects camelCase but Django uses snake_case
+    mainImage = graphene.String(source='main_image')
+    additionalImages = graphene.List(graphene.String, source='additional_images')
+    partNumber = graphene.String(source='part_number')
+    dimensions = graphene.Field('ecommerce_platform.schema.Dimensions')
+    
+    def resolve_dimensions(self, info):
+        return self.dimensions or {}
+
+class CategoryType(DjangoObjectType):
+    class Meta:
+        model = CategoryModel
+        fields = "__all__"
+
+class ManufacturerType(DjangoObjectType):
+    class Meta:
+        model = ManufacturerModel
+        fields = "__all__"
+

@@ -50,10 +50,13 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        local_only = options['local_only']
+        # Check command line option first, then fall back to setting in settings.py
+        local_only = options['local_only'] or getattr(settings, 'SYNNEX_LOCAL_ONLY', False)
         
         if not local_only:
             self.download_from_sftp(options['remote_file'], options['sftp_host'], options['sftp_username'], options['sftp_password'])
+        else:
+            self.stdout.write(self.style.WARNING("Using local file only (SFTP download skipped)"))
         
         if not os.path.exists(LOCAL_FILE):
             self.stdout.write(self.style.ERROR(f"File not found: {LOCAL_FILE}"))
