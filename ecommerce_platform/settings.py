@@ -15,6 +15,8 @@ import os
 import environ
 from dotenv import load_dotenv
 from datetime import timedelta
+import dj_database_url
+
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
 
@@ -157,13 +159,16 @@ CORS_ALLOW_CREDENTIALS = True
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DATABASE_NAME', default='ecommerce_platform'),
-        'USER': os.environ.get('DATABASE_USER', default='postgres'),
-        'PASSWORD': os.environ.get('DATABASE_PASSWORD', default='postgres'),
-        'HOST': os.environ.get('DATABASE_HOST', default='localhost'),
-        'PORT': '5436',
+        'NAME': os.environ.get('DATABASE_NAME', 'ecommerce_platform'),
+        'USER': os.environ.get('DATABASE_USER', 'postgres'),
+        'PASSWORD': os.environ.get('DATABASE_PASSWORD', 'postgres'),
+        'HOST': os.environ.get('DATABASE_HOST', 'localhost'),
+        'PORT': os.environ.get('DATABASE_PORT', '5436'),
     }
 }
+
+# Override with DATABASE_URL if set (for Heroku)
+DATABASES['default'] = dj_database_url.config(conn_max_age=600, ssl_require=True, default=os.environ.get('DATABASE_URL'))
 
 
 # Password validation
