@@ -16,6 +16,7 @@ import environ
 from dotenv import load_dotenv
 from datetime import timedelta
 import dj_database_url
+import django_heroku
 
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -260,3 +261,4 @@ LOGGING = {
         },
     },
 }
+django_heroku.settings(locals())    
