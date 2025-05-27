@@ -89,13 +89,13 @@ GRAPHENE = {
 if 'REDISCLOUD_URL' in os.environ:
     # Production settings using Redis Cloud
     REDIS_URL = os.environ['REDISCLOUD_URL']
-    redis_url = redis.from_url(REDIS_URL)
+    redis_client = redis.from_url(REDIS_URL)
 else:
     # Local development settings
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
     REDIS_DB = int(os.environ.get('REDIS_DB', 0))
-    redis_url = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
 AUTHENTICATION_BACKENDS = [
     "ecommerce_platform.jwt_debug.DebugJSONWebTokenBackend",  # Our debug backend first
@@ -124,7 +124,10 @@ Q_CLUSTER = {
     'cpu_affinity': 1,
     'label': 'Django Q',
     'redis': {
-        'url': REDIS_URL if 'REDISCLOUD_URL' in os.environ else f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}',
+        'host': REDIS_HOST if 'REDISCLOUD_URL' not in os.environ else None,
+        'port': REDIS_PORT if 'REDISCLOUD_URL' not in os.environ else None,
+        'db': REDIS_DB if 'REDISCLOUD_URL' not in os.environ else None,
+        'url': REDIS_URL if 'REDISCLOUD_URL' in os.environ else None,
     },
     'catch_up': False,
     'sync': False,
