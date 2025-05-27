@@ -127,7 +127,7 @@ Q_CLUSTER = {
         'host': REDIS_HOST if 'REDISCLOUD_URL' not in os.environ else None,
         'port': REDIS_PORT if 'REDISCLOUD_URL' not in os.environ else None,
         'db': REDIS_DB if 'REDISCLOUD_URL' not in os.environ else None,
-        'url': REDIS_URL if 'REDISCLOUD_URL' in os.environ else None,
+        # 'url': REDIS_URL if 'REDISCLOUD_URL' in os.environ else None,
     },
     'catch_up': False,
     'sync': False,
