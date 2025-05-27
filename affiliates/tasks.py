@@ -16,6 +16,7 @@ import traceback
 from affiliates.views import get_redis_kwargs
 from django_q.brokers import get_broker
 from django_q.conf import Conf
+from urllib.parse import urlparse
 
 # Set up dedicated logger
 logger = logging.getLogger('affiliate_tasks')
@@ -261,21 +262,33 @@ def get_redis_kwargs():
         redis_kwargs['password'] = settings.REDIS_PASSWORD
     return redis_kwargs
 
-def generate_standalone_amazon_affiliate_url(asin, url):
+def get_redis_connection():
+    if 'REDISCLOUD_URL' in os.environ:
+        url = urlparse(os.environ['REDISCLOUD_URL'])
+        return {
+            'host': url.hostname,
+            'port': url.port,
+            'password': url.password,
+            'decode_responses': True
+        }
+    else:
+        redis_kwargs = {
+            'host': os.getenv('REDIS_HOST', 'localhost'),
+            'port': int(os.getenv('REDIS_PORT', 6379)),
+            'decode_responses': True
+        }
+        if os.getenv('REDIS_PASSWORD'):
+            redis_kwargs['password'] = os.getenv('REDIS_PASSWORD')
+        return redis_kwargs
+
+def generate_standalone_amazon_affiliate_url(task_id, asin):
     """Generate an Amazon affiliate URL without an existing product"""
-    logger.info(f"Generating standalone affiliate URL for ASIN: {asin}, URL: {url}")
+    logger.info(f"Generating standalone affiliate URL for ASIN: {asin}")
     
     try:
-        # Store task info in Redis
-        redis_kwargs = get_redis_kwargs()
+        redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
-        
-        # Generate a unique task ID 
-        task_id = str(uuid.uuid4())
-        
-        # Store the task details for 24 hours
         r.set(f"pending_standalone_task:{task_id}", asin, ex=86400)
-        r.set(f"pending_standalone_original_url:{task_id}", url, ex=86400)
         
         # Determine base URL for callback - use settings or fallback
         base_url = getattr(settings, 'BASE_URL', 'http://localhost:8000')
@@ -286,7 +299,6 @@ def generate_standalone_amazon_affiliate_url(asin, url):
             "asin": asin,
             "taskId": task_id,
             "callbackUrl": callback_url,
-            "url": url,
             "type": "amazon_standalone"
         }
         
@@ -295,8 +307,12 @@ def generate_standalone_amazon_affiliate_url(asin, url):
         logger.info(f"Published to Redis channel 'affiliate_tasks': {publish_result} clients received")
         
         return task_id, True
-    except Exception as e:
+    except redis.exceptions.AuthenticationError as e:
         logger.error(f"Error publishing to Redis: {str(e)}")
+        logger.error(traceback.format_exc())
+        return task_id if 'task_id' in locals() else str(uuid.uuid4()), False
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
         return task_id if 'task_id' in locals() else str(uuid.uuid4()), False
 
