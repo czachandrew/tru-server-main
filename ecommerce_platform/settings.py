@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from datetime import timedelta
 import dj_database_url
 import django_heroku
+import redis
 
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -84,9 +85,17 @@ GRAPHENE = {
     ],
 }
 
-REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB = int(os.environ.get('REDIS_DB', 0))
+# Determine Redis configuration based on environment
+if 'REDISCLOUD_URL' in os.environ:
+    # Production settings using Redis Cloud
+    REDIS_URL = os.environ['REDISCLOUD_URL']
+    redis_url = redis.from_url(REDIS_URL)
+else:
+    # Local development settings
+    REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+    REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+    REDIS_DB = int(os.environ.get('REDIS_DB', 0))
+    redis_url = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
 AUTHENTICATION_BACKENDS = [
     "ecommerce_platform.jwt_debug.DebugJSONWebTokenBackend",  # Our debug backend first
@@ -115,9 +124,7 @@ Q_CLUSTER = {
     'cpu_affinity': 1,
     'label': 'Django Q',
     'redis': {
-        'host': os.environ.get('REDIS_HOST', default='localhost'),
-        'port': os.environ.get('REDIS_PORT', default=6379),
-        'db': 0,
+        'url': REDIS_URL if 'REDISCLOUD_URL' in os.environ else f'redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}',
     },
     'catch_up': False,
     'sync': False,
@@ -164,12 +171,13 @@ DATABASES = {
         'USER': os.environ.get('DATABASE_USER', 'postgres'),
         'PASSWORD': os.environ.get('DATABASE_PASSWORD', 'postgres'),
         'HOST': os.environ.get('DATABASE_HOST', 'localhost'),
-        'PORT': os.environ.get('DATABASE_PORT', '5436'),
+        'PORT': os.environ.get('DATABASE_PORT', '5432'),
     }
 }
 
 # Override with DATABASE_URL if set (for Heroku)
-DATABASES['default'] = dj_database_url.config(conn_max_age=600, ssl_require=True, default=os.environ.get('DATABASE_URL'))
+if 'DATABASE_URL' in os.environ:
+    DATABASES['default'] = dj_database_url.config(conn_max_age=600, ssl_require=True)
 
 
 # Password validation
