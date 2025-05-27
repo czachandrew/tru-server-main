@@ -27,13 +27,14 @@ import json
 import redis
 import logging
 from django.conf import settings
+from urllib.parse import urlparse
+import os
+import datetime
 
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
     nltk.download('stopwords')
-import os
-import datetime
 
 # from .graphql.types.scalars import JSONScalar
 
@@ -848,17 +849,26 @@ class Query(graphene.ObjectType):
         logger.info(f"Checking standalone affiliate URL for task_id: {task_id}")
         
         try:
-            # Redis connection with proper fallbacks
-            redis_kwargs = {
-                'host': getattr(settings, 'REDIS_HOST', 'localhost'),
-                'port': getattr(settings, 'REDIS_PORT', 6379),
-                'decode_responses': True
-            }
-            
-            # Only add password if it exists in settings
-            if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
-                redis_kwargs['password'] = settings.REDIS_PASSWORD
-                
+            # Parse the REDISCLOUD_URL
+            if 'REDISCLOUD_URL' in os.environ:
+                url = urlparse(os.environ['REDISCLOUD_URL'])
+                redis_kwargs = {
+                    'host': url.hostname,
+                    'port': url.port,
+                    'password': url.password,
+                    'decode_responses': True
+                }
+            else:
+                # Fallback to local development settings
+                redis_kwargs = {
+                    'host': getattr(settings, 'REDIS_HOST', 'localhost'),
+                    'port': getattr(settings, 'REDIS_PORT', 6379),
+                    'decode_responses': True
+                }
+                # Only add password if it exists in settings
+                if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
+                    redis_kwargs['password'] = settings.REDIS_PASSWORD
+
             r = redis.Redis(**redis_kwargs)
             
             # Check if task is still pending
@@ -1140,7 +1150,7 @@ class CreateAmazonAffiliateLink(graphene.Mutation):
                 logger.info(f"Created task ID: {task_id}")
                 
                 # Store product data in Redis
-                redis_kwargs = get_redis_kwargs()
+                redis_kwargs = get_redis_connection()
                 r = redis.Redis(**redis_kwargs)
                 
                 # Store all product data with the task_id
@@ -1391,19 +1401,25 @@ class ProductSearchResult(graphene.ObjectType):
     
     # Add any other fields that your client needs
 
-def get_redis_kwargs():
+def get_redis_connection():
     """Helper to get standardized Redis connection kwargs"""
-    redis_kwargs = {
-        'host': getattr(settings, 'REDIS_HOST', 'localhost'),
-        'port': getattr(settings, 'REDIS_PORT', 6379),
-        'decode_responses': True
-    }
-    
-    # Only add password if it exists in settings
-    if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
-        redis_kwargs['password'] = settings.REDIS_PASSWORD
-        
-    return redis_kwargs
+    if 'REDISCLOUD_URL' in os.environ:
+        url = urlparse(os.environ['REDISCLOUD_URL'])
+        return {
+            'host': url.hostname,
+            'port': url.port,
+            'password': url.password,
+            'decode_responses': True
+        }
+    else:
+        redis_kwargs = {
+            'host': getattr(settings, 'REDIS_HOST', 'localhost'),
+            'port': getattr(settings, 'REDIS_PORT', 6379),
+            'decode_responses': True
+        }
+        if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
+            redis_kwargs['password'] = settings.REDIS_PASSWORD
+        return redis_kwargs
 
 # Add this helper function near the top of your file
 def ensure_product_has_amazon_affiliate_link(product):
