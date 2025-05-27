@@ -500,7 +500,7 @@ class Query(graphene.ObjectType):
                 try:
                     from django_q.tasks import async_task
                     # Pass only the ASIN to the task function
-                    async_task('affiliates.tasks.generate_standalone_amazon_affiliate_url', asin, "http://example.com")  # Replace with actual URL if needed
+                    async_task('affiliates.tasks.generate_standalone_amazon_affiliate_url', asin)  # Replace with actual URL if needed
                     debug_logger.info(f"Created affiliate link generation task for ASIN: {asin}")
                 except Exception as e:
                     debug_logger.error(f"Error creating affiliate link task for ASIN: {asin}: {str(e)}")
