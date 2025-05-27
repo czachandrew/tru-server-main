@@ -18,9 +18,11 @@ from datetime import timedelta
 import dj_database_url
 import django_heroku
 import redis
+from urllib.parse import urlparse
 
-env_path = Path('.') / '.env'
-load_dotenv(dotenv_path=env_path)
+# env_path = Path('.') / '.env'
+# load_dotenv(dotenv_path=env_path)
+load_dotenv()
 
 SYNNEX_LOCAL_ONLY = True
 
@@ -84,18 +86,25 @@ GRAPHENE = {
         'graphql_jwt.middleware.JSONWebTokenMiddleware',
     ],
 }
-
+# print(os.environ)
 # Determine Redis configuration based on environment
 if 'REDISCLOUD_URL' in os.environ:
     # Production settings using Redis Cloud
     REDIS_URL = os.environ['REDISCLOUD_URL']
     redis_client = redis.from_url(REDIS_URL)
+
+    # Parse the REDISCLOUD_URL
+    url = urlparse(REDIS_URL)
+    REDIS_HOST = url.hostname
+    REDIS_PORT = url.port
+    REDIS_DB = url.path[1:]  # Remove the leading '/'
 else:
     # Local development settings
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
     REDIS_DB = int(os.environ.get('REDIS_DB', 0))
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+    print(REDIS_HOST, REDIS_PORT, REDIS_DB)
 
 AUTHENTICATION_BACKENDS = [
     "ecommerce_platform.jwt_debug.DebugJSONWebTokenBackend",  # Our debug backend first
@@ -113,6 +122,8 @@ GRAPHQL_JWT = {
 
 CORS_URLS_REGEX = r'^/graphql/.*$'
 
+print("here are the redis settings", REDIS_HOST, REDIS_PORT, REDIS_DB)
+
 Q_CLUSTER = {
     'name': 'ecommerce_platform',
     'workers': 4,
@@ -124,10 +135,10 @@ Q_CLUSTER = {
     'cpu_affinity': 1,
     'label': 'Django Q',
     'redis': {
-        'host': REDIS_HOST if 'REDISCLOUD_URL' not in os.environ else None,
-        'port': REDIS_PORT if 'REDISCLOUD_URL' not in os.environ else None,
-        'db': REDIS_DB if 'REDISCLOUD_URL' not in os.environ else None,
-        # 'url': REDIS_URL if 'REDISCLOUD_URL' in os.environ else None,
+        'host': REDIS_HOST,
+        'port': REDIS_PORT,
+        'db': REDIS_DB,
+        'password': url.password if 'REDISCLOUD_URL' in os.environ else None,
     },
     'catch_up': False,
     'sync': False,
