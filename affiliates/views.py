@@ -164,7 +164,12 @@ def standalone_callback(request, task_id):
         if not asin:
             logger.error(f"No pending standalone task found for task_id: {task_id}")
             return HttpResponse("Task not found", status=404)
-            
+        
+        # Use affiliate_url as original_url if original_url is not present
+        if not original_url:
+            logger.warning(f"No original URL found for task_id: {task_id}, using affiliate_url as original_url")
+            original_url = affiliate_url
+        
         # Get product data from Redis
         product_data_json = r.get(f"pending_product_data:{task_id}")
         print(f"Product data from Redis: {product_data_json}")
