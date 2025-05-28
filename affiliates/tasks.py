@@ -19,21 +19,31 @@ from urllib.parse import urlparse
 # Set up dedicated logger
 logger = logging.getLogger('affiliate_tasks')
 
+def get_redis_connection():
+    if 'REDISCLOUD_URL' in os.environ:
+        url = urlparse(os.environ['REDISCLOUD_URL'])
+        return {
+            'host': url.hostname,
+            'port': url.port,
+            'password': url.password,
+            'decode_responses': True
+        }
+    else:
+        redis_kwargs = {
+            'host': os.getenv('REDIS_HOST', 'localhost'),
+            'port': int(os.getenv('REDIS_PORT', 6379)),
+            'decode_responses': True
+        }
+        if os.getenv('REDIS_PASSWORD'):
+            redis_kwargs['password'] = os.getenv('REDIS_PASSWORD')
+        return redis_kwargs
+
 def generate_amazon_affiliate_url(affiliate_link_id, asin):
     """Generate an Amazon affiliate URL via puppeteer worker with callback URL"""
     logger.info(f"Starting generate_amazon_affiliate_url: affiliate_link_id={affiliate_link_id}, asin={asin}")
     try:
-        # Redis connection with proper fallbacks for missing settings
-        redis_kwargs = {
-            'host': getattr(settings, 'REDIS_HOST', 'localhost'),
-            'port': getattr(settings, 'REDIS_PORT', 6379),
-            'decode_responses': True
-        }
-        
-        # Only add password if it exists in settings
-        if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
-            redis_kwargs['password'] = settings.REDIS_PASSWORD
-            
+        # Get Redis connection
+        redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
         
         # Generate a unique task ID
@@ -41,7 +51,6 @@ def generate_amazon_affiliate_url(affiliate_link_id, asin):
         logger.info(f"Generated task_id: {task_id}")
         
         # Store the affiliate_link_id in Redis with task_id as key
-        # This allows the callback to find the affiliate link
         r.set(f"pending_affiliate_task:{task_id}", affiliate_link_id, ex=86400)  # 24hr expiry
         
         # Determine base URL for callback - use settings or fallback
@@ -59,17 +68,13 @@ def generate_amazon_affiliate_url(affiliate_link_id, asin):
         publish_result = r.publish("affiliate_tasks", json.dumps(task_data))
         logger.info(f"Published to Redis channel 'affiliate_tasks': {publish_result} clients received")
         
-        # No need to save notes since we don't have that field
-        # Just store the task_id in Redis
-        
-        # Still schedule a safety check (but much less frequent)
+        # Schedule a safety check
         schedule_time = timezone.now() + datetime.timedelta(hours=1)
         
-        # FIX: Properly serialize the args as a JSON list
         Schedule.objects.create(
             name=f"safety_check_affiliate_{task_id}",
             func='affiliates.tasks.check_stalled_affiliate_task',
-            args=json.dumps([task_id]),  # Fixed: Use json.dumps with a list
+            args=json.dumps([task_id]),
             schedule_type=Schedule.ONCE,
             next_run=schedule_time
         )
@@ -259,25 +264,6 @@ def get_redis_kwargs():
     if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
         redis_kwargs['password'] = settings.REDIS_PASSWORD
     return redis_kwargs
-
-def get_redis_connection():
-    if 'REDISCLOUD_URL' in os.environ:
-        url = urlparse(os.environ['REDISCLOUD_URL'])
-        return {
-            'host': url.hostname,
-            'port': url.port,
-            'password': url.password,
-            'decode_responses': True
-        }
-    else:
-        redis_kwargs = {
-            'host': os.getenv('REDIS_HOST', 'localhost'),
-            'port': int(os.getenv('REDIS_PORT', 6379)),
-            'decode_responses': True
-        }
-        if os.getenv('REDIS_PASSWORD'):
-            redis_kwargs['password'] = os.getenv('REDIS_PASSWORD')
-        return redis_kwargs
 
 def generate_standalone_amazon_affiliate_url(asin):
     """Generate an Amazon affiliate URL without an existing product"""
