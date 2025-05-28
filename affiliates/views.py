@@ -11,6 +11,8 @@ from django.utils import timezone
 from products.models import Product, Manufacturer, Category
 from django.utils.text import slugify
 import traceback
+import os
+from urllib.parse import urlparse
 
 logger = logging.getLogger('affiliate_tasks')
 
@@ -111,6 +113,25 @@ def check_affiliate_status(request):
     
     return JsonResponse({"results": results})
 
+def get_redis_connection():
+    if 'REDISCLOUD_URL' in os.environ:
+        url = urlparse(os.environ['REDISCLOUD_URL'])
+        return {
+            'host': url.hostname,
+            'port': url.port,
+            'password': url.password,
+            'decode_responses': True
+        }
+    else:
+        redis_kwargs = {
+            'host': getattr(settings, 'REDIS_HOST', 'localhost'),
+            'port': int(getattr(settings, 'REDIS_PORT', 6379)),
+            'decode_responses': True
+        }
+        if os.getenv('REDIS_PASSWORD'):
+            redis_kwargs['password'] = os.getenv('REDIS_PASSWORD')
+        return redis_kwargs
+
 @csrf_exempt
 def standalone_callback(request, task_id):
     """Handle callback from puppeteer worker with standalone affiliate link results"""
@@ -133,7 +154,7 @@ def standalone_callback(request, task_id):
             return HttpResponse("Error recorded", status=200)
             
         # Get Redis connection
-        redis_kwargs = get_redis_kwargs()
+        redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
         
         # Get the ASIN and original URL from Redis
@@ -249,23 +270,9 @@ def standalone_callback(request, task_id):
         traceback.print_exc()
         return HttpResponse(f"Error: {str(e)}", status=500)
 
-def get_redis_kwargs():
-    """Helper to get standardized Redis connection kwargs"""
-    redis_kwargs = {
-        'host': getattr(settings, 'REDIS_HOST', 'localhost'),
-        'port': getattr(settings, 'REDIS_PORT', 6379),
-        'decode_responses': True
-    }
-    
-    # Only add password if it exists in settings
-    if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
-        redis_kwargs['password'] = settings.REDIS_PASSWORD
-        
-    return redis_kwargs
-
 def store_result_in_redis(task_id, error=None):
     """Helper to store task results in Redis"""
-    redis_kwargs = get_redis_kwargs()
+    redis_kwargs = get_redis_connection()
     r = redis.Redis(**redis_kwargs)
     
     # Get the ASIN and original URL
@@ -298,7 +305,7 @@ def check_affiliate_task_status(request):
         return JsonResponse({"error": "No task_id provided"}, status=400)
     
     # Get Redis connection
-    redis_kwargs = get_redis_kwargs()
+    redis_kwargs = get_redis_connection()
     r = redis.Redis(**redis_kwargs)
     
     # Check if task result exists
