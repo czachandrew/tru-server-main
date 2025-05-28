@@ -11,9 +11,7 @@ from django.utils import timezone
 import datetime
 from django.db import models
 from django.core.management.base import BaseCommand
-import requests
-import traceback
-from affiliates.views import get_redis_kwargs
+
 from django_q.brokers import get_broker
 from django_q.conf import Conf
 from urllib.parse import urlparse

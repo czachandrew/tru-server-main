@@ -1139,7 +1139,7 @@ class CreateAmazonAffiliateLink(graphene.Mutation):
                 logger.info(f"Queueing task to generate affiliate URL for ASIN: {asin}")
                 url = productData.sourceUrl or f"https://www.amazon.com/dp/{asin}"
                 task_id, success = generate_standalone_amazon_affiliate_url(asin)
-                
+                print("task_id", task_id)
                 if not success:
                     return CreateAmazonAffiliateLink(
                         taskId=None,
