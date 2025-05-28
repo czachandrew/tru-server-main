@@ -32,17 +32,8 @@ def affiliate_callback(request, task_id):
         affiliate_url = data.get('affiliateUrl')
         error = data.get('error')
         
-        # Get Redis connection with proper fallbacks
-        redis_kwargs = {
-            'host': getattr(settings, 'REDIS_HOST', 'localhost'),
-            'port': getattr(settings, 'REDIS_PORT', 6379),
-            'decode_responses': True
-        }
-        
-        # Only add password if it exists in settings
-        if hasattr(settings, 'REDIS_PASSWORD') and settings.REDIS_PASSWORD:
-            redis_kwargs['password'] = settings.REDIS_PASSWORD
-            
+        # Get Redis connection
+        redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
         
         # Get the affiliate_link_id from Redis
@@ -124,8 +115,8 @@ def get_redis_connection():
         }
     else:
         redis_kwargs = {
-            'host': getattr(settings, 'REDIS_HOST', 'localhost'),
-            'port': int(getattr(settings, 'REDIS_PORT', 6379)),
+            'host': os.getenv('REDIS_HOST', 'localhost'),
+            'port': int(os.getenv('REDIS_PORT', 6379)),
             'decode_responses': True
         }
         if os.getenv('REDIS_PASSWORD'):
