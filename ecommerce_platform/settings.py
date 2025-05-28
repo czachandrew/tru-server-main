@@ -41,6 +41,8 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
+BASE_URL = "https://tru-prime-f4f949ce5752.herokuapp.com"
+
 
 # Application definition
 
