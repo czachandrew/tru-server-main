@@ -281,11 +281,13 @@ def get_redis_connection():
             redis_kwargs['password'] = os.getenv('REDIS_PASSWORD')
         return redis_kwargs
 
-def generate_standalone_amazon_affiliate_url(task_id, asin):
+def generate_standalone_amazon_affiliate_url(asin):
     """Generate an Amazon affiliate URL without an existing product"""
-    logger.info(f"Generating standalone affiliate URL for ASIN: {asin}")
-    
     try:
+        # Generate a unique task ID
+        task_id = str(uuid.uuid4())
+        logger.info(f"Generating standalone affiliate URL for ASIN: {asin} with task_id: {task_id}")
+        
         redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
         r.set(f"pending_standalone_task:{task_id}", asin, ex=86400)
@@ -309,12 +311,10 @@ def generate_standalone_amazon_affiliate_url(task_id, asin):
         return task_id, True
     except redis.exceptions.AuthenticationError as e:
         logger.error(f"Error publishing to Redis: {str(e)}")
-        logger.error(traceback.format_exc())
-        return task_id if 'task_id' in locals() else str(uuid.uuid4()), False
+        return None, False
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        logger.error(traceback.format_exc())
-        return task_id if 'task_id' in locals() else str(uuid.uuid4()), False
+        return None, False
 
 def check_stalled_standalone_task(task_id, asin):
     """Safety check for stalled standalone affiliate tasks"""
@@ -375,7 +375,7 @@ def generate_affiliate_from_search(task_id, search_term, search_key):
         search_url = f"https://www.amazon.com/s?k={encoded_search}"
         
         # Generate affiliate link using the search URL
-        result = generate_standalone_amazon_affiliate_url(task_id, search_url)
+        result = generate_standalone_amazon_affiliate_url(search_url)
         
         logger.info(f"Generated affiliate link for search: {result}")
         return result

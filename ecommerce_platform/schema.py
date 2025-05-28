@@ -64,6 +64,8 @@ from graphql_jwt.middleware import JSONWebTokenMiddleware
 # Import the GraphQL types from your types directory
 from ecommerce_platform.graphql.types.affiliate import AffiliateLinkType
 from ecommerce_platform.graphql.types.offer import OfferType
+from django_q.tasks import async_task
+
 
 User = get_user_model()
 
@@ -498,7 +500,6 @@ class Query(graphene.ObjectType):
             if not affiliate_links.exists():
                 debug_logger.info(f"No existing affiliate link for ASIN: {asin}, creating new link")
                 try:
-                    from django_q.tasks import async_task
                     # Pass only the ASIN to the task function
                     async_task('affiliates.tasks.generate_standalone_amazon_affiliate_url', asin)  # Replace with actual URL if needed
                     debug_logger.info(f"Created affiliate link generation task for ASIN: {asin}")
@@ -635,7 +636,7 @@ class Query(graphene.ObjectType):
                         import uuid
                         task_id = f"amazon-{uuid.uuid4().hex[:8]}"
                         result = async_task('affiliates.tasks.generate_standalone_amazon_affiliate_url', 
-                                  task_id, extracted_part_number)
+                                   extracted_part_number)
                         debug_logger.info(f"Created affiliate link generation task {task_id} for potential ASIN")
             except Exception as e:
                 debug_logger.error(f"Error creating affiliate link task: {str(e)}")
@@ -1137,7 +1138,7 @@ class CreateAmazonAffiliateLink(graphene.Mutation):
                 # Queue task to generate affiliate URL and create product
                 logger.info(f"Queueing task to generate affiliate URL for ASIN: {asin}")
                 url = productData.sourceUrl or f"https://www.amazon.com/dp/{asin}"
-                task_id, success = generate_standalone_amazon_affiliate_url(asin, url)
+                task_id, success = generate_standalone_amazon_affiliate_url(asin)
                 
                 if not success:
                     return CreateAmazonAffiliateLink(
@@ -1178,7 +1179,7 @@ class CreateAmazonAffiliateLink(graphene.Mutation):
                 logger.info(f"Using product ID: {productId}")
                 
                 url = currentUrl or f"https://www.amazon.com/dp/{asin}"
-                task_id, success = generate_standalone_amazon_affiliate_url(asin, url)
+                task_id, success = generate_standalone_amazon_affiliate_url(asin)
                 
                 if not success:
                     return CreateAmazonAffiliateLink(
