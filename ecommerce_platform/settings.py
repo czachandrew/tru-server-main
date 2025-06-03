@@ -286,3 +286,11 @@ LOGGING = {
     },
 }
 django_heroku.settings(locals())    
+
+# Google OAuth Settings
+GOOGLE_OAUTH_CLIENT_ID = os.getenv('GOOGLE_OAUTH2_CLIENT_ID')
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv('GOOGLE_OAUTH2_CLIENT_SECRET')
+
+# Make sure these are set in your environment variables
+if not GOOGLE_OAUTH_CLIENT_ID:
+    raise ValueError("GOOGLE_OAUTH2_CLIENT_ID environment variable is required")    

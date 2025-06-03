@@ -49,3 +49,7 @@ urllib3==2.4.0
 wcwidth==0.2.13
 whitenoise==6.9.0
 setuptools
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.2.0
+requests-oauthlib==1.4.0

@@ -9,7 +9,11 @@ class CustomUserManager(BaseUserManager):
             raise ValueError('Email is required')
         email = self.normalize_email(email)
         user = self.model(email=email, **extra_fields)
-        user.set_password(password)
+        if password:
+            user.set_password(password)
+        else:
+            # For OAuth users, we don't set a password
+            user.set_unusable_password()
         user.save(using=self._db)
         return user
 
@@ -26,6 +30,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(default=timezone.now)
+    
+    # Google OAuth fields
+    google_id = models.CharField(max_length=100, blank=True, null=True, unique=True)
+    avatar = models.URLField(blank=True, null=True)
     
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
