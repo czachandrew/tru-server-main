@@ -82,6 +82,7 @@ class Product(models.Model):
 
     # Add this new field
     is_featured = models.BooleanField(default=False)
+    is_demo = models.BooleanField(default=False, help_text="Mark this product as demo data for testing/presentations")
 
     class Meta:
         # Comment out the indexes temporarily
