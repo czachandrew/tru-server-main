@@ -27,6 +27,7 @@ class ConsumerMatchResult:
     """Result of consumer-focused product matching (No Amazon API version)"""
     primary_recommendation: Optional[Dict] = None  
     supplier_alternatives: List[Dict] = field(default_factory=list)      
+    accessory_products: List[Dict] = field(default_factory=list)  # NEW: Separate accessories
     enterprise_alternatives: List[Dict] = field(default_factory=list)     
     search_strategy: str = ""                      
     confidence_score: float = 0.0
@@ -157,8 +158,9 @@ class ConsumerProductMatcher:
             result.amazon_fallback_suggestion = search_term
             result.confidence_score = 0.6
         
-        # Search for both accessories AND demo product alternatives
-        all_alternatives = []
+        # SEPARATE: Demo product alternatives vs accessories
+        demo_alternatives = []
+        accessory_products = []
         
         # 1. First, search for demo product alternatives (laptops for laptops, etc.)
         if category in ['laptops', 'desktops', 'monitors', 'gaming_devices']:
@@ -172,20 +174,21 @@ class ConsumerProductMatcher:
             
             demo_products = self._enhanced_supplier_search(device_search_terms)
             
-            # Add demo products as alternatives (not accessories)
+            # Add ONLY demo products as alternatives (actual competing products)
             for product in demo_products[:3]:  # Limit to top 3 demo alternatives
-                if product.is_demo:  # Only demo products as alternatives
-                    all_alternatives.append({
+                if product.is_demo and self._is_actual_alternative(product, category):
+                    demo_alternatives.append({
                         'product': product, 
                         'source': 'supplier', 
                         'match_type': f'{category}_demo_alternative'
                     })
         
-        # 2. Then search for relevant accessories we can provide
+        # 2. Then search for relevant accessories (cables, power supplies, etc.)
         accessory_products = self._find_relevant_accessories(search_term, category)
-        all_alternatives.extend(accessory_products)
         
-        result.supplier_alternatives = all_alternatives
+        # IMPORTANT: Keep alternatives and accessories separate
+        result.supplier_alternatives = demo_alternatives  # Only actual alternatives
+        result.accessory_products = accessory_products    # Keep accessories separate
         
         return result
     
@@ -397,6 +400,42 @@ class ConsumerProductMatcher:
             for p in products
         ]
 
+    def _is_actual_alternative(self, product: Product, category: str) -> bool:
+        """
+        Determine if a product is actually an alternative (competing product) 
+        rather than an accessory or unrelated item
+        """
+        product_name = product.name.lower()
+        product_desc = (product.description or "").lower()
+        
+        # Define what constitutes actual alternatives for each category
+        alternative_indicators = {
+            'laptops': ['laptop', 'notebook', 'macbook', 'thinkpad', 'inspiron', 'pavilion'],
+            'desktops': ['desktop', 'pc', 'workstation', 'computer', 'imac', 'optiplex'],
+            'monitors': ['monitor', 'display', 'screen'],
+            'gaming_devices': ['gaming laptop', 'gaming desktop', 'gaming pc']
+        }
+        
+        # Define what are clearly accessories (should NOT be alternatives)
+        accessory_indicators = [
+            'cable', 'cord', 'power', 'adapter', 'charger', 'mount', 'bracket',
+            'stand', 'case', 'cover', 'connector', 'extension', 'hub', 'splitter'
+        ]
+        
+        # Check if this is clearly an accessory
+        for accessory_term in accessory_indicators:
+            if accessory_term in product_name or accessory_term in product_desc:
+                return False  # This is an accessory, not an alternative
+        
+        # Check if this is actually an alternative for the category
+        category_alternatives = alternative_indicators.get(category, [])
+        for alt_term in category_alternatives:
+            if alt_term in product_name or alt_term in product_desc:
+                return True  # This is an actual alternative
+        
+        # If we can't determine, err on the side of caution
+        return False
+
 # Updated integration function
 def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
     """
@@ -442,21 +481,37 @@ def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
         # Use the new classification function to determine relationship
         relationship_data = _classify_product_relationship(product, search_term)
         
-        # Override match type based on actual product classification
-        if relationship_data['relationship_type'] == 'accessory':
-            match_type = relationship_data['relationship_category']
-        
         formatted_results.append({
             'product': product,
             'matchType': match_type,
-            'matchConfidence': 0.6,
+            'matchConfidence': 0.7,
             'isAmazonProduct': False,
-            'isAlternative': relationship_data['relationship_type'] != 'accessory',  # Accessories are not alternatives
+            'isAlternative': True,  # These are actual alternatives (competing products)
             # Enhanced fields
             'relationshipType': relationship_data['relationship_type'],
             'relationshipCategory': relationship_data['relationship_category'],
             'marginOpportunity': relationship_data['margin_opportunity'],
             'revenueType': relationship_data['revenue_type']
+        })
+    
+    # Add accessory products separately (NOT as alternatives)
+    for accessory in (getattr(result, 'accessory_products', []) or []):
+        product = accessory['product']
+        source = accessory['source']
+        match_type = accessory['match_type']
+        
+        # Force accessory classification
+        formatted_results.append({
+            'product': product,
+            'matchType': match_type,
+            'matchConfidence': 0.6,
+            'isAmazonProduct': False,
+            'isAlternative': False,  # Accessories are NOT alternatives
+            # Enhanced fields for accessories
+            'relationshipType': 'accessory',
+            'relationshipCategory': match_type,  # e.g., 'laptop_accessory'
+            'marginOpportunity': 'high',
+            'revenueType': 'cross_sell_opportunity'
         })
     
     response = {
