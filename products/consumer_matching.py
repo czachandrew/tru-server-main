@@ -222,12 +222,15 @@ class ConsumerProductMatcher:
         # Strategy 4: Enhanced description mining for consumer products
         consumer_matches = self._consumer_description_mining(search_term)
         
+        # Strategy 5: DEMO PRODUCTS - Search demo products that match the term
+        demo_matches = self._demo_product_search(search_term)
+        
         # Combine and deduplicate
         seen_ids = set()
         results = []
         
-        # Priority order: exact > consumer > description > name
-        for product_list in [exact_matches, consumer_matches, description_matches, name_matches]:
+        # Priority order: demo > exact > consumer > description > name
+        for product_list in [demo_matches, exact_matches, consumer_matches, description_matches, name_matches]:
             for product in product_list:
                 if product.id not in seen_ids:
                     seen_ids.add(product.id)
@@ -238,6 +241,26 @@ class ConsumerProductMatcher:
                 break
         
         return results
+    
+    def _demo_product_search(self, search_term: str) -> List[Product]:
+        """Search demo products that match the search term"""
+        if not search_term:
+            return []
+        
+        keywords = search_term.lower().split()
+        query = Q(is_demo=True)  # Only demo products
+        
+        # Build query for demo products
+        name_query = Q()
+        for keyword in keywords:
+            if len(keyword) > 2:
+                name_query |= Q(name__icontains=keyword)
+                name_query |= Q(description__icontains=keyword)
+                name_query |= Q(part_number__icontains=keyword)
+        
+        query &= name_query
+        
+        return list(Product.objects.filter(query)[:5])
     
     def _consumer_description_mining(self, search_term: str) -> List[Product]:
         """Mine descriptions for consumer product references"""
@@ -261,7 +284,8 @@ class ConsumerProductMatcher:
             if any(indicator in term.lower() for term in search_terms):
                 query |= Q(description__icontains=indicator)
         
-        return list(Product.objects.filter(query, source='partner_import')[:8])
+        # Include both partner imports AND manual/demo products
+        return list(Product.objects.filter(query).filter(Q(source='partner_import') | Q(source='manual'))[:8])
     
     def _weighted_description_search(self, search_term: str) -> List[Product]:
         """Enhanced description search with keyword weighting"""
@@ -279,7 +303,8 @@ class ConsumerProductMatcher:
         for keyword in keywords:
             query &= Q(description__icontains=keyword)
         
-        return list(Product.objects.filter(query, source='partner_import')[:10])
+        # Include both partner imports AND manual/demo products
+        return list(Product.objects.filter(query).filter(Q(source='partner_import') | Q(source='manual'))[:10])
     
     def _exact_part_search(self, search_term: str) -> List[Product]:
         """Search for exact part number matches with enhanced extraction"""
@@ -306,7 +331,8 @@ class ConsumerProductMatcher:
             query |= Q(name__icontains=part)
             query |= Q(description__icontains=part)
         
-        return list(Product.objects.filter(query, source='partner_import')[:5])
+        # Include both partner imports AND manual/demo products
+        return list(Product.objects.filter(query).filter(Q(source='partner_import') | Q(source='manual'))[:5])
     
     def _fuzzy_name_search(self, search_term: str) -> List[Product]:
         """Fuzzy search on product names with stemming"""
@@ -317,7 +343,8 @@ class ConsumerProductMatcher:
             if len(keyword) > 2:
                 query |= Q(name__icontains=keyword)
         
-        return list(Product.objects.filter(query, source='partner_import')[:5])
+        # Include both partner imports AND manual/demo products
+        return list(Product.objects.filter(query).filter(Q(source='partner_import') | Q(source='manual'))[:5])
     
     def _find_relevant_accessories(self, search_term: str, category: str) -> List[Dict]:
         """Find accessories relevant to the main product category"""
@@ -336,6 +363,7 @@ class ConsumerProductMatcher:
         for term in accessory_terms:
             query |= Q(description__icontains=term)
         
+        # Only get products that are clearly accessories
         products = Product.objects.filter(query, source='partner_import')[:6]
         
         return [
@@ -385,15 +413,19 @@ def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
         source = alt['source']
         match_type = alt['match_type']
         
-        # Determine enhanced relationship fields
-        relationship_data = _determine_enhanced_relationship(match_type, source, is_primary=False)
+        # Use the new classification function to determine relationship
+        relationship_data = _classify_product_relationship(product, search_term)
+        
+        # Override match type based on actual product classification
+        if relationship_data['relationship_type'] == 'accessory':
+            match_type = relationship_data['relationship_category']
         
         formatted_results.append({
             'product': product,
             'matchType': match_type,
             'matchConfidence': 0.6,
             'isAmazonProduct': False,
-            'isAlternative': True,
+            'isAlternative': relationship_data['relationship_type'] != 'accessory',  # Accessories are not alternatives
             # Enhanced fields
             'relationshipType': relationship_data['relationship_type'],
             'relationshipCategory': relationship_data['relationship_category'],
@@ -480,5 +512,80 @@ def _determine_enhanced_relationship(match_type: str, source: str, is_primary: b
         'relationship_type': 'related',
         'relationship_category': 'general_match',
         'margin_opportunity': 'medium',
+        'revenue_type': 'product_sale'
+    }
+
+def _classify_product_relationship(product: Product, search_context: str) -> Dict[str, str]:
+    """
+    Classify the relationship of a product to the search context
+    This function determines if something is an accessory, alternative, or unrelated
+    """
+    product_name = product.name.lower()
+    product_desc = (product.description or "").lower()
+    search_lower = search_context.lower()
+    
+    # Accessory indicators
+    accessory_keywords = [
+        'cable', 'cord', 'adapter', 'charger', 'power supply', 'mount', 'bracket', 
+        'stand', 'case', 'cover', 'protector', 'connector', 'extension', 'hub',
+        'splitter', 'switch', 'surge protector', 'ups', 'battery', 'keystone',
+        'jack', 'plug', 'socket', 'outlet'
+    ]
+    
+    # Alternative product indicators (actual competing products)
+    alternative_keywords = [
+        'laptop', 'notebook', 'desktop', 'computer', 'monitor', 'display', 
+        'keyboard', 'mouse', 'tablet', 'phone', 'printer', 'scanner',
+        'router', 'modem', 'server', 'workstation'
+    ]
+    
+    # Check if this is clearly an accessory
+    is_accessory = any(keyword in product_name or keyword in product_desc 
+                      for keyword in accessory_keywords)
+    
+    # Check if this is a competing product
+    is_alternative = any(keyword in product_name or keyword in product_desc 
+                        for keyword in alternative_keywords)
+    
+    # Special case: If searching for a laptop and finding a cable, it's an accessory
+    if any(device in search_lower for device in ['laptop', 'macbook', 'notebook', 'computer']):
+        if is_accessory:
+            return {
+                'relationship_type': 'accessory',
+                'relationship_category': 'laptop_accessory',
+                'margin_opportunity': 'high',
+                'revenue_type': 'cross_sell_opportunity'
+            }
+        elif is_alternative:
+            return {
+                'relationship_type': 'equivalent', 
+                'relationship_category': 'laptop_alternative',
+                'margin_opportunity': 'medium',
+                'revenue_type': 'product_sale'
+            }
+    
+    # Default: If it's clearly an accessory, mark as such
+    if is_accessory:
+        return {
+            'relationship_type': 'accessory',
+            'relationship_category': 'general_accessory',
+            'margin_opportunity': 'high',
+            'revenue_type': 'cross_sell_opportunity'
+        }
+    
+    # If it's an alternative product, mark as equivalent
+    if is_alternative:
+        return {
+            'relationship_type': 'equivalent',
+            'relationship_category': 'product_alternative', 
+            'margin_opportunity': 'medium',
+            'revenue_type': 'product_sale'
+        }
+    
+    # Default: Related but unclear relationship
+    return {
+        'relationship_type': 'related',
+        'relationship_category': 'unclear_match',
+        'margin_opportunity': 'low',
         'revenue_type': 'product_sale'
     } 
