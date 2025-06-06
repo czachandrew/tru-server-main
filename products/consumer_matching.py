@@ -262,10 +262,12 @@ class ConsumerProductMatcher:
         for product_list in [demo_matches, exact_matches, consumer_matches, description_matches, name_matches]:
             for product in product_list:
                 if product.id not in seen_ids:
-                    seen_ids.add(product.id)
-                    results.append(product)
-                    if len(results) >= 15:  # Limit total results
-                        break
+                    # FILTER OUT ACCESSORIES - they should only be in accessory_products
+                    if not self._is_accessory_product(product):
+                        seen_ids.add(product.id)
+                        results.append(product)
+                        if len(results) >= 15:  # Limit total results
+                            break
             if len(results) >= 15:
                 break
         
@@ -435,6 +437,19 @@ class ConsumerProductMatcher:
         
         # If we can't determine, err on the side of caution
         return False
+
+    def _is_accessory_product(self, product: Product) -> bool:
+        """Check if a product is an accessory (cable, adapter, etc.)"""
+        product_name = product.name.lower()
+        product_desc = (product.description or "").lower()
+        
+        accessory_keywords = [
+            'cable', 'cord', 'adapter', 'charger', 'power supply', 'mount', 'bracket',
+            'stand', 'case', 'cover', 'connector', 'extension', 'hub', 'splitter'
+        ]
+        
+        return any(keyword in product_name or keyword in product_desc 
+                  for keyword in accessory_keywords)
 
 # Updated integration function
 def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
