@@ -157,9 +157,35 @@ class ConsumerProductMatcher:
             result.amazon_fallback_suggestion = search_term
             result.confidence_score = 0.6
         
-        # ALWAYS search for relevant accessories we can provide
+        # Search for both accessories AND demo product alternatives
+        all_alternatives = []
+        
+        # 1. First, search for demo product alternatives (laptops for laptops, etc.)
+        if category in ['laptops', 'desktops', 'monitors', 'gaming_devices']:
+            # For device categories, search for demo products with related terms
+            device_search_terms = {
+                'laptops': 'laptop macbook notebook',
+                'desktops': 'desktop computer pc',
+                'monitors': 'monitor display screen',
+                'gaming_devices': 'gaming laptop desktop'
+            }.get(category, search_term)
+            
+            demo_products = self._enhanced_supplier_search(device_search_terms)
+            
+            # Add demo products as alternatives (not accessories)
+            for product in demo_products[:3]:  # Limit to top 3 demo alternatives
+                if product.is_demo:  # Only demo products as alternatives
+                    all_alternatives.append({
+                        'product': product, 
+                        'source': 'supplier', 
+                        'match_type': f'{category}_demo_alternative'
+                    })
+        
+        # 2. Then search for relevant accessories we can provide
         accessory_products = self._find_relevant_accessories(search_term, category)
-        result.supplier_alternatives = accessory_products
+        all_alternatives.extend(accessory_products)
+        
+        result.supplier_alternatives = all_alternatives
         
         return result
     

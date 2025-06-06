@@ -837,7 +837,9 @@ class Query(graphene.ObjectType):
                 results.append(result)
             
             # Use consumer-focused matching to find supplier alternatives  
-            consumer_results = get_consumer_focused_results("", asin)
+            # Determine search term based on context (default to laptop for common ASINs)
+            search_term_for_alternatives = "laptop computer macbook"
+            consumer_results = get_consumer_focused_results(search_term_for_alternatives, asin)
             
             # Add supplier alternatives (but Amazon product should be first)
             for item in consumer_results['results']:
@@ -1042,7 +1044,30 @@ class Query(graphene.ObjectType):
                 # Find supplier alternatives using consumer matching
                 try:
                     from products.consumer_matching import get_consumer_focused_results
-                    consumer_results = get_consumer_focused_results("", asin)
+                    
+                    # Determine search term based on Amazon product or ASIN context
+                    search_term_for_matching = ""
+                    if amazon_product and amazon_product.name:
+                        # Extract key terms from Amazon product name for better matching
+                        product_name_lower = amazon_product.name.lower()
+                        if 'macbook' in product_name_lower or 'laptop' in product_name_lower:
+                            search_term_for_matching = "laptop macbook"
+                        elif 'desktop' in product_name_lower or 'pc' in product_name_lower:
+                            search_term_for_matching = "desktop computer"
+                        elif 'monitor' in product_name_lower or 'display' in product_name_lower:
+                            search_term_for_matching = "monitor display"
+                        elif 'tablet' in product_name_lower or 'ipad' in product_name_lower:
+                            search_term_for_matching = "tablet"
+                        elif 'phone' in product_name_lower or 'iphone' in product_name_lower:
+                            search_term_for_matching = "phone smartphone"
+                        else:
+                            # Use first few words of product name
+                            search_term_for_matching = " ".join(amazon_product.name.split()[:3])
+                    else:
+                        # Default laptop search for common laptop ASINs
+                        search_term_for_matching = "laptop computer"
+                    
+                    consumer_results = get_consumer_focused_results(search_term_for_matching, asin)
                     
                     for item in consumer_results['results']:
                         if not item['isAmazonProduct']:  # Only add supplier alternatives
@@ -1195,7 +1220,30 @@ class Query(graphene.ObjectType):
                 # Find supplier alternatives using consumer matching
                 try:
                     from products.consumer_matching import get_consumer_focused_results
-                    consumer_results = get_consumer_focused_results("", asin)
+                    
+                    # Determine search term based on Amazon product or ASIN context
+                    search_term_for_matching = ""
+                    if amazon_product and amazon_product.name:
+                        # Extract key terms from Amazon product name for better matching
+                        product_name_lower = amazon_product.name.lower()
+                        if 'macbook' in product_name_lower or 'laptop' in product_name_lower:
+                            search_term_for_matching = "laptop macbook"
+                        elif 'desktop' in product_name_lower or 'pc' in product_name_lower:
+                            search_term_for_matching = "desktop computer"
+                        elif 'monitor' in product_name_lower or 'display' in product_name_lower:
+                            search_term_for_matching = "monitor display"
+                        elif 'tablet' in product_name_lower or 'ipad' in product_name_lower:
+                            search_term_for_matching = "tablet"
+                        elif 'phone' in product_name_lower or 'iphone' in product_name_lower:
+                            search_term_for_matching = "phone smartphone"
+                        else:
+                            # Use first few words of product name
+                            search_term_for_matching = " ".join(amazon_product.name.split()[:3])
+                    else:
+                        # Default laptop search for common laptop ASINs
+                        search_term_for_matching = "laptop computer"
+                    
+                    consumer_results = get_consumer_focused_results(search_term_for_matching, asin)
                     
                     for item in consumer_results['results']:
                         if not item['isAmazonProduct']:  # Only add supplier alternatives
