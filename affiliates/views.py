@@ -193,13 +193,14 @@ def standalone_callback(request, task_id):
         product_data_json = r.get(f"pending_product_data:{task_id}")
         print(f"Product data from Redis: {product_data_json}")
         
+        product = None
+        
         if product_data_json:
             # Parse product data from Redis
             product_data = json.loads(product_data_json)
             
             # Create manufacturer
             manufacturer_name = product_data.get('manufacturer', 'Amazon Marketplace')
-            # Replace with this code:
             try:
                 # First try to find by exact name
                 manufacturer = Manufacturer.objects.get(name__iexact=manufacturer_name)
@@ -213,24 +214,49 @@ def standalone_callback(request, task_id):
                     slug=unique_slug
                 )
             
-            # Create product using data from Chrome extension
-            product = Product.objects.create(
-                name=product_data.get('name', f"Amazon Product {asin}"),
-                slug=slugify(product_data.get('name', f"amazon-product-{asin}")),
-                description=product_data.get('description', ''),
-                part_number=extract_real_part_number(product_data, asin),
-                manufacturer=manufacturer,
-                main_image=product_data.get('mainImage', ''),
-                status='active',
-                source='amazon'
-            )
+            # Extract real part number
+            extracted_part_number = extract_real_part_number(product_data, asin)
             
-            # Save technical details if available
-            if 'technicalDetails' in product_data:
-                product.specifications = product_data['technicalDetails']
-                product.save()
+            # Check if product already exists by manufacturer + part_number
+            try:
+                product = Product.objects.get(
+                    manufacturer=manufacturer,
+                    part_number=extracted_part_number
+                )
+                print(f"Found existing product: {product.id} - {product.name}")
+            except Product.DoesNotExist:
+                # Product doesn't exist, create it
+                try:
+                    product = Product.objects.create(
+                        name=product_data.get('name', f"Amazon Product {asin}"),
+                        slug=slugify(product_data.get('name', f"amazon-product-{asin}")),
+                        description=product_data.get('description', ''),
+                        part_number=extracted_part_number,
+                        manufacturer=manufacturer,
+                        main_image=product_data.get('mainImage', ''),
+                        status='active',
+                        source='amazon'
+                    )
+                    
+                    # Save technical details if available
+                    if 'technicalDetails' in product_data:
+                        product.specifications = product_data['technicalDetails']
+                        product.save()
+                        
+                    print(f"Created new product: {product.id} - {product.name}")
+                except Exception as create_error:
+                    print(f"Error creating product: {create_error}")
+                    # Try to find existing product by ASIN as fallback
+                    existing_by_asin = Product.objects.filter(
+                        part_number=asin,
+                        source='amazon'
+                    ).first()
+                    if existing_by_asin:
+                        product = existing_by_asin
+                        print(f"Found fallback product by ASIN: {product.id}")
+                    else:
+                        raise create_error
                 
-            print(f"Created product: {product.id} - {product.name}")
         else:
             # Fallback to simple product creation
             manufacturer, _ = Manufacturer.objects.get_or_create(
@@ -238,34 +264,55 @@ def standalone_callback(request, task_id):
                 defaults={'slug': 'amazon-marketplace'}
             )
             
-            # Even in fallback, try to extract a real part number if we have any product data
-            fallback_part_number = asin
-            if product_data_json:
+            # Check if product already exists by ASIN
+            try:
+                product = Product.objects.get(
+                    manufacturer=manufacturer,
+                    part_number=asin
+                )
+                print(f"Found existing fallback product: {product.id} - {product.name}")
+            except Product.DoesNotExist:
+                # Create new product
                 try:
-                    fallback_product_data = json.loads(product_data_json)
-                    fallback_part_number = extract_real_part_number(fallback_product_data, asin)
-                except:
-                    pass
+                    product = Product.objects.create(
+                        name=f"Amazon Product {asin}",
+                        slug=f"amazon-product-{asin}",
+                        part_number=asin,
+                        manufacturer=manufacturer,
+                        status='active',
+                        source='amazon'
+                    )
+                    print(f"Created fallback product: {product.id} - Part: {asin}")
+                except Exception as fallback_error:
+                    print(f"Error creating fallback product: {fallback_error}")
+                    raise fallback_error
             
-            product = Product.objects.create(
-                name=f"Amazon Product {asin}",
-                slug=f"amazon-product-{asin}",
-                part_number=fallback_part_number,
-                manufacturer=manufacturer,
-                status='active',
-                source='amazon'
-            )
-            print(f"Created product (fallback): {product.id} - Part: {fallback_part_number}")
-            
-        # Create affiliate link
-        affiliate_link = AffiliateLink.objects.create(
+        # Check if affiliate link already exists
+        existing_affiliate_link = AffiliateLink.objects.filter(
             product=product,
             platform='amazon',
-            platform_id=asin,
-            original_url=original_url,
-            affiliate_url=affiliate_url,
-            is_active=True
-        )
+            platform_id=asin
+        ).first()
+        
+        if existing_affiliate_link:
+            # Update existing affiliate link
+            existing_affiliate_link.affiliate_url = affiliate_url
+            existing_affiliate_link.original_url = original_url
+            existing_affiliate_link.is_active = True
+            existing_affiliate_link.save()
+            affiliate_link = existing_affiliate_link
+            print(f"Updated existing affiliate link: {affiliate_link.id}")
+        else:
+            # Create new affiliate link
+            affiliate_link = AffiliateLink.objects.create(
+                product=product,
+                platform='amazon',
+                platform_id=asin,
+                original_url=original_url,
+                affiliate_url=affiliate_url,
+                is_active=True
+            )
+            print(f"Created new affiliate link: {affiliate_link.id}")
         
         # Store result in Redis
         result_data = {
