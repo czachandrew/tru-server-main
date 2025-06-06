@@ -28,8 +28,32 @@ class ProductType(DjangoObjectType):
     partNumber = graphene.String(source='part_number')
     dimensions = graphene.Field('ecommerce_platform.schema.Dimensions')
     
+    # BACKWARD COMPATIBILITY: Chrome extension expects asin field
+    asin = graphene.String()
+    
     def resolve_dimensions(self, info):
         return self.dimensions or {}
+    
+    def resolve_asin(self, info):
+        """
+        Resolve ASIN from affiliate links if available
+        Chrome extension expects this field for Amazon compatibility
+        """
+        # Check if product has Amazon affiliate link
+        from affiliates.models import AffiliateLink
+        amazon_link = AffiliateLink.objects.filter(
+            product=self,
+            platform='amazon'
+        ).first()
+        
+        if amazon_link:
+            return amazon_link.platform_id
+        
+        # Fallback: check if part_number looks like an ASIN (10 chars, alphanumeric)
+        if self.part_number and len(self.part_number) == 10 and self.part_number.isalnum():
+            return self.part_number
+            
+        return None
 
 class CategoryType(DjangoObjectType):
     class Meta:

@@ -55,3 +55,45 @@ def debug_token(request):
         })
     except Exception as e:
         return JsonResponse({"error": str(e)})
+
+def test_simple_task(request):
+    """Test if Django Q task queuing is working"""
+    try:
+        from django_q.tasks import async_task
+        import time
+        
+        # Queue a simple test task
+        task_id = async_task('time.sleep', 1)
+        
+        return JsonResponse({
+            'success': True,
+            'task_id': task_id,
+            'message': 'Test task queued successfully'
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        })
+
+def check_task_status(request, task_id):
+    """Check the status of a specific task"""
+    try:
+        from django_q.models import Task
+        
+        task = Task.objects.get(id=task_id)
+        
+        return JsonResponse({
+            'task_id': task_id,
+            'function': task.func,
+            'started': task.started,
+            'stopped': task.stopped,
+            'success': task.success,
+            'result': str(task.result) if task.result else None
+        })
+        
+    except Task.DoesNotExist:
+        return JsonResponse({
+            'error': 'Task not found'
+        }, status=404)

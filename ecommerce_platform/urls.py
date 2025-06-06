@@ -18,7 +18,7 @@ from django.contrib import admin
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from ecommerce_platform.graphql.views import DebugGraphQLView
-from ecommerce_platform.views import test_auth, debug_token
+from ecommerce_platform.views import test_auth, debug_token, test_simple_task, check_task_status
 from affiliates.views import affiliate_callback, standalone_callback, check_affiliate_task_status
 from graphene_django.views import GraphQLView
 import json
@@ -65,6 +65,26 @@ class SimpleDebugGraphQLView(GraphQLView):
         try:
             # Let the parent class handle the request normally
             response = super().dispatch(request, *args, **kwargs)
+            
+            # Check for authentication errors in GraphQL response
+            if response.status_code == 200 and hasattr(response, 'content'):
+                try:
+                    content = json.loads(response.content)
+                    if 'errors' in content:
+                        for error in content['errors']:
+                            extensions = error.get('extensions', {})
+                            error_code = extensions.get('code')
+                            
+                            # Return proper HTTP status for auth errors
+                            if error_code in ['INVALID_CREDENTIALS', 'EMAIL_NOT_VERIFIED', 'AUTHENTICATION_FAILED']:
+                                response.status_code = 401
+                            elif error_code in ['PERMISSION_DENIED']:
+                                response.status_code = 403
+                            elif error_code in ['INVALID_INPUT', 'VALIDATION_ERROR']:
+                                response.status_code = 400
+                except:
+                    pass  # If we can't parse, keep original response
+            
             print(f"RESPONSE STATUS: {response.status_code}")
             
             # Print error responses
@@ -77,12 +97,13 @@ class SimpleDebugGraphQLView(GraphQLView):
             
             print("="*80 + "\n")
             return response
+            
         except Exception as e:
             print(f"UNHANDLED EXCEPTION: {str(e)}")
             traceback.print_exc()
             print("="*80 + "\n")
             
-            # Return detailed error information
+            # Return 500 for server errors
             return JsonResponse({
                 "errors": [{
                     "message": str(e),
@@ -101,4 +122,6 @@ urlpatterns = [
     path('api/affiliate/callback/<str:task_id>/', affiliate_callback, name='affiliate_callback'),
     path('api/affiliate/standalone/<str:task_id>/', standalone_callback, name='standalone_callback'),
     path('api/affiliate/status/', check_affiliate_task_status, name='check_affiliate_status'),
+    path('test-task/', test_simple_task, name='test-task'),
+    path('check-task/<str:task_id>/', check_task_status, name='check-task'),
 ]

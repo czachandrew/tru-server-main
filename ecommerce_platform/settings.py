@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 # load_dotenv(dotenv_path=env_path)
 load_dotenv()
 
-SYNNEX_LOCAL_ONLY = True
+SYNNEX_LOCAL_ONLY = False
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -41,9 +41,10 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
-BASE_URL = "https://tru-prime-f4f949ce5752.herokuapp.com"
+# Replace the hardcoded BASE_URL with:
+BASE_URL = os.environ.get('BASE_URL', 'http://localhost:8000')
 
-
+print("BASE_URL", BASE_URL)
 # Application definition
 
 INSTALLED_APPS = [
@@ -76,6 +77,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'ecommerce_platform.middleware.ResponseSizeMiddleware',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -90,8 +92,12 @@ GRAPHENE = {
 }
 # print(os.environ)
 # Determine Redis configuration based on environment
+# Initialize local_redis_password to None
+local_redis_password = None
+
 if 'REDISCLOUD_URL' in os.environ:
     # Production settings using Redis Cloud
+    print("Using Redis Cloud")
     REDIS_URL = os.environ['REDISCLOUD_URL']
     redis_client = redis.from_url(REDIS_URL)
 
@@ -100,13 +106,24 @@ if 'REDISCLOUD_URL' in os.environ:
     REDIS_HOST = url.hostname
     REDIS_PORT = url.port
     REDIS_DB = url.path[1:]  # Remove the leading '/'
+    # For Q_CLUSTER, the password will be url.password
 else:
     # Local development settings
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
     REDIS_DB = int(os.environ.get('REDIS_DB', 0))
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
-    print(REDIS_HOST, REDIS_PORT, REDIS_DB)
+    # 'url' is NOT defined here if this block is executed
+    # Get local Redis password if it exists
+    local_redis_password = os.environ.get('REDIS_PASSWORD', None)
+    redis_client_kwargs = {
+        'host': REDIS_HOST,
+        'port': REDIS_PORT,
+        'db': REDIS_DB,
+    }
+    if local_redis_password:
+        redis_client_kwargs['password'] = local_redis_password
+    redis_client = redis.Redis(**redis_client_kwargs)
+    print(f"Using local Redis: {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB}")
 
 AUTHENTICATION_BACKENDS = [
     "ecommerce_platform.jwt_debug.DebugJSONWebTokenBackend",  # Our debug backend first
@@ -124,7 +141,7 @@ GRAPHQL_JWT = {
 
 CORS_URLS_REGEX = r'^/graphql/.*$'
 
-print("here are the redis settings", REDIS_HOST, REDIS_PORT, REDIS_DB)
+print("Final Redis settings for Q_CLUSTER:", REDIS_HOST, REDIS_PORT, REDIS_DB)
 
 Q_CLUSTER = {
     'name': 'ecommerce_platform',
@@ -140,7 +157,8 @@ Q_CLUSTER = {
         'host': REDIS_HOST,
         'port': REDIS_PORT,
         'db': REDIS_DB,
-        'password': url.password if 'REDISCLOUD_URL' in os.environ else None,
+        # Corrected password logic:
+        'password': url.password if 'REDISCLOUD_URL' in os.environ else local_redis_password,
     },
     'catch_up': False,
     'sync': False,

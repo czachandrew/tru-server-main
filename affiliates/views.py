@@ -6,6 +6,7 @@ import json
 import redis
 import logging
 import uuid
+import re  # Add regex import for part number extraction
 from affiliates.models import AffiliateLink
 from django.utils import timezone
 from products.models import Product, Manufacturer, Category
@@ -148,12 +149,39 @@ def standalone_callback(request, task_id):
         redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
         
+        # Check if we already processed this task
+        existing_result = r.get(f"standalone_task_status:{task_id}")
+        if existing_result:
+            logger.info(f"Task {task_id} already processed, returning success")
+            return HttpResponse("Already processed", status=200)
+        
         # Get the ASIN and original URL from Redis
         asin = r.get(f"pending_standalone_task:{task_id}")
         original_url = r.get(f"pending_standalone_original_url:{task_id}")
         
         if not asin:
             logger.error(f"No pending standalone task found for task_id: {task_id}")
+            
+            # Check if affiliate link already exists for this ASIN (task might be duplicate)
+            if affiliate_url:
+                # Try to extract ASIN from affiliate URL
+                import re
+                asin_match = re.search(r'/dp/([A-Z0-9]{10})', affiliate_url)
+                if asin_match:
+                    extracted_asin = asin_match.group(1)
+                    logger.info(f"Extracted ASIN {extracted_asin} from affiliate URL, checking for existing link")
+                    
+                    # Check if we already have this affiliate link
+                    existing_link = AffiliateLink.objects.filter(
+                        platform='amazon',
+                        platform_id=extracted_asin,
+                        affiliate_url=affiliate_url
+                    ).first()
+                    
+                    if existing_link:
+                        logger.info(f"Affiliate link already exists: {existing_link.id}")
+                        return HttpResponse("Link already exists", status=200)
+            
             return HttpResponse("Task not found", status=404)
         
         # Use affiliate_url as original_url if original_url is not present
@@ -190,7 +218,7 @@ def standalone_callback(request, task_id):
                 name=product_data.get('name', f"Amazon Product {asin}"),
                 slug=slugify(product_data.get('name', f"amazon-product-{asin}")),
                 description=product_data.get('description', ''),
-                part_number=product_data.get('partNumber') or asin,
+                part_number=extract_real_part_number(product_data, asin),
                 manufacturer=manufacturer,
                 main_image=product_data.get('mainImage', ''),
                 status='active',
@@ -210,15 +238,24 @@ def standalone_callback(request, task_id):
                 defaults={'slug': 'amazon-marketplace'}
             )
             
+            # Even in fallback, try to extract a real part number if we have any product data
+            fallback_part_number = asin
+            if product_data_json:
+                try:
+                    fallback_product_data = json.loads(product_data_json)
+                    fallback_part_number = extract_real_part_number(fallback_product_data, asin)
+                except:
+                    pass
+            
             product = Product.objects.create(
                 name=f"Amazon Product {asin}",
                 slug=f"amazon-product-{asin}",
-                part_number=asin,
+                part_number=fallback_part_number,
                 manufacturer=manufacturer,
                 status='active',
                 source='amazon'
             )
-            print(f"Created product (fallback): {product.id}")
+            print(f"Created product (fallback): {product.id} - Part: {fallback_part_number}")
             
         # Create affiliate link
         affiliate_link = AffiliateLink.objects.create(
@@ -316,3 +353,147 @@ def check_affiliate_task_status(request):
     # Parse and return the result
     task_status = json.loads(task_status_json)
     return JsonResponse(task_status)
+
+def extract_real_part_number(product_data, asin):
+    """
+    Enhanced extraction of real manufacturer part numbers from Amazon product data
+    
+    Priority order:
+    1. Technical details (multiple field variations)
+    2. Enhanced name parsing with brand-specific patterns
+    3. Description mining
+    4. Fall back to ASIN
+    """
+    
+    print(f"🔍 Extracting part number for ASIN: {asin}")
+    
+    # Strategy 1: Enhanced technical details extraction
+    technical_details_str = product_data.get('technicalDetails')
+    if technical_details_str:
+        try:
+            if isinstance(technical_details_str, str):
+                technical_details = json.loads(technical_details_str)
+            else:
+                technical_details = technical_details_str
+            
+            print(f"📋 Technical details available: {list(technical_details.keys())[:5]}...")
+            
+            # Comprehensive list of part number fields
+            part_fields = [
+                'model name', 'model_name', 'modelname',
+                'model number', 'model_number', 'modelnumber', 
+                'part number', 'part_number', 'partnumber',
+                'sku', 'mpn', 'manufacturer part number',
+                'item model number', 'product model',
+                'series', 'model', 'item part number'
+            ]
+            
+            for field in part_fields:
+                value = technical_details.get(field)
+                if value and isinstance(value, str):
+                    cleaned = value.strip().upper()
+                    # Enhanced validation
+                    if (len(cleaned) >= 4 and 
+                        cleaned != asin and 
+                        not cleaned.startswith('FBA') and
+                        not cleaned.startswith('AMAZON') and
+                        not cleaned.startswith('B0') and  # Avoid other ASINs
+                        re.match(r'^[A-Z0-9\-_]+$', cleaned)):
+                        print(f"✅ Found real part number in {field}: {cleaned}")
+                        return cleaned
+                        
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"⚠️ Failed to parse technicalDetails: {e}")
+    
+    # Strategy 2: Enhanced name parsing with brand-specific patterns
+    product_name = product_data.get('name', '')
+    if product_name:
+        print(f"📝 Analyzing product name: {product_name[:100]}...")
+        name_upper = product_name.upper()
+        
+        # Pattern 1: Model at end of title (Samsung, LG pattern)
+        # "SAMSUNG UJ59 Series 32" Computer Monitor VA Panel LU32J590UQNXZA"
+        end_pattern = r'\b([A-Z]{2,4}\d{2,}[A-Z0-9]*)\s*$'
+        end_match = re.search(end_pattern, name_upper)
+        if end_match:
+            candidate = end_match.group(1)
+            if len(candidate) >= 6:
+                print(f"✅ Extracted part number from name (end): {candidate}")
+                return candidate
+        
+        # Pattern 2: Brand-specific model extraction
+        brand_patterns = {
+            'SAMSUNG': r'SAMSUNG\s+\w*\s*([A-Z]{2}\d{2}[A-Z0-9]*)',
+            'LG': r'LG\s+\w*\s*([A-Z0-9\-]{5,})',
+            'MSI': r'MSI\s+([A-Z]\d{3,4}[A-Z0-9\-]*)',
+            'ASUS': r'ASUS\s+([A-Z0-9\-]{5,})',
+            'LOGITECH': r'LOGITECH\s+([A-Z]{2}\d{3,4})',
+            'REDRAGON': r'REDRAGON\s+.*?([A-Z]\d{3,4}[A-Z]?)',
+        }
+        
+        for brand, pattern in brand_patterns.items():
+            if brand in name_upper:
+                match = re.search(pattern, name_upper)
+                if match:
+                    candidate = match.group(1)
+                    if len(candidate) >= 4:
+                        print(f"✅ Extracted part number using {brand} pattern: {candidate}")
+                        return candidate
+        
+        # Pattern 3: Generic alphanumeric models (improved)
+        # Look for standalone model numbers
+        model_pattern = r'\b([A-Z]{1,3}\d{2,}[A-Z0-9\-]*)\b'
+        models = re.findall(model_pattern, name_upper)
+        if models:
+            # Filter out common false positives
+            filtered_models = []
+            for model in models:
+                if (len(model) >= 4 and 
+                    not model.startswith('B0') and  # Not ASIN
+                    not model in ['USB', 'HDMI', 'RGB', 'LED'] and  # Not tech terms
+                    not re.match(r'^\d+$', model)):  # Not just numbers
+                    filtered_models.append(model)
+            
+            if filtered_models:
+                # Prefer longer, more specific models
+                best_model = max(filtered_models, key=len)
+                print(f"✅ Extracted part number from name (pattern): {best_model}")
+                return best_model
+        
+        # Pattern 4: Chipset/generation patterns (for motherboards, etc.)
+        chipset_pattern = r'\b([A-Z]\d{3,4}[A-Z]*)\s+(GAMING|PLUS|PRO|WIFI)'
+        chipset_match = re.search(chipset_pattern, name_upper)
+        if chipset_match:
+            base_chipset = chipset_match.group(1)
+            modifier = chipset_match.group(2)
+            # Build a more complete part number
+            candidate = f"{base_chipset}{modifier}"
+            print(f"✅ Built part number from chipset pattern: {candidate}")
+            return candidate
+    
+    # Strategy 3: Description mining (if name parsing fails)
+    description = product_data.get('description', '')
+    if description and len(description) > 50:
+        print(f"📄 Mining description for part numbers...")
+        desc_upper = description.upper()
+        
+        # Look for "Model:" or "Part Number:" labels
+        labeled_pattern = r'(?:MODEL|PART\s*NUMBER|SKU|MPN):\s*([A-Z0-9\-_]{4,})'
+        labeled_match = re.search(labeled_pattern, desc_upper)
+        if labeled_match:
+            candidate = labeled_match.group(1)
+            print(f"✅ Found labeled part number in description: {candidate}")
+            return candidate
+        
+        # Look for standalone alphanumeric codes in description
+        desc_models = re.findall(r'\b([A-Z]{2,4}\d{2,}[A-Z0-9\-]*)\b', desc_upper)
+        if desc_models:
+            # Score by length and uniqueness
+            best_desc_model = max(desc_models, key=len)
+            if len(best_desc_model) >= 6:
+                print(f"✅ Extracted part number from description: {best_desc_model}")
+                return best_desc_model
+    
+    # Strategy 4: Last resort - use ASIN but log it
+    print(f"⚠️ No real part number found, falling back to ASIN: {asin}")
+    return asin
