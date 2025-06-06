@@ -1080,7 +1080,7 @@ class Query(graphene.ObjectType):
                                 main_image=product.main_image,
                                 manufacturer=product.manufacturer,
                                 is_amazon_product=False,
-                                is_alternative=True,
+                                is_alternative=item.get('isAlternative', False),  # Use the value from consumer matching
                                 match_type=item.get('matchType', 'supplier_alternative'),
                                 match_confidence=item.get('matchConfidence', 0.7),
                                 # Enhanced relationship fields
@@ -1256,7 +1256,7 @@ class Query(graphene.ObjectType):
                                 main_image=product.main_image,
                                 manufacturer=product.manufacturer,
                                 is_amazon_product=False,
-                                is_alternative=True,
+                                is_alternative=item.get('isAlternative', False),  # Use the value from consumer matching
                                 match_type=item.get('matchType', 'supplier_alternative'),
                                 match_confidence=item.get('matchConfidence', 0.7),
                                 # Enhanced relationship fields
