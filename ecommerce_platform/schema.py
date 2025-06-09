@@ -603,585 +603,143 @@ class Query(graphene.ObjectType):
 
     def resolve_products_search(self, info, term=None, asin=None, max_price=None, **kwargs):
         """
-        Complete implementation for Chrome extension product search with affiliate link handling
+        UPDATED: Chrome extension search with consumer matching logic
         
-        PRIORITY ORDER:
-        1. ALWAYS include original Amazon product with affiliate link (from recent ProductExists request)
-        2. ALSO include database alternatives with supplier offers
+        Now uses the same consumer matching logic as unifiedProductSearch 
+        to return demo alternatives and proper relationship classification
         """
-        debug_logger.info(f"=== ENHANCED PRODUCT SEARCH START ===")
+        debug_logger.info(f"=== PRODUCTS SEARCH (Chrome Extension) ===")
         debug_logger.info(f"Request: term='{term}', asin='{asin}', max_price={max_price}")
         
         # If no term provided, return empty result (backward compatibility)
         if not term:
             debug_logger.warning(f"⚠️ No search term provided, returning empty results")
             return ProductModel.objects.none()
-        
-        # FIND THE ORIGINAL AMAZON PRODUCT: Check recent ProductExists requests
-        original_amazon_product = None
-        original_asin = asin  # Use provided ASIN if available
-        
-        if not original_asin:
-            # Strategy: Check cached ASIN from recent ProductExists requests
-            try:
-                import redis
-                redis_kwargs = get_redis_connection()
-                r = redis.Redis(**redis_kwargs)
-                
-                # Try different variations of the search term
-                cache_keys = [
-                    f"recent_asin:{term.lower().replace(' ', '_')}",
-                    f"recent_asin:{term.lower()}",
-                    f"recent_asin:{term.replace(' ', '_').lower()}"
-                ]
-                
-                for cache_key in cache_keys:
+
+        # NEW: Use consumer matching logic to get demo alternatives
+        try:
+            from products.consumer_matching import get_consumer_focused_results
+            import re
+            
+            # Determine if this is an ASIN search to get better results
+            # Try to find cached ASIN from recent ProductExists requests
+            original_asin = asin
+            if not original_asin:
+                try:
+                    import redis
+                    redis_kwargs = get_redis_connection()
+                    r = redis.Redis(**redis_kwargs)
+                    
+                    cache_key = f"recent_asin:{term.lower().replace(' ', '_')}"
                     cached_asin = r.get(cache_key)
                     if cached_asin:
                         original_asin = cached_asin
                         debug_logger.info(f"💾 Found cached ASIN '{original_asin}' for term '{term}'")
-                        break
-                        
-                if not original_asin:
-                    debug_logger.info(f"💾 No cached ASIN found for term '{term}'")
-                        
-            except Exception as e:
-                debug_logger.warning(f"⚠️ Could not check cached ASIN: {str(e)}")
-        
-        # If we have an ASIN, ensure we get the Amazon product with affiliate link
-        if original_asin:
-            debug_logger.info(f"🔗 Processing original Amazon product: ASIN {original_asin}")
+                except Exception as e:
+                    debug_logger.warning(f"⚠️ Could not check cached ASIN: {str(e)}")
             
-            try:
-                # Ensure we have an affiliate link for this ASIN
-                affiliate_link = ensure_affiliate_link_exists(original_asin)
-                debug_logger.info(f"🔗 Affiliate link: {'✅ Found' if affiliate_link and affiliate_link.affiliate_url else '⏳ Pending'}")
+            # IMPROVED: Smart search term detection for better matching
+            search_term_for_matching = term
+            if 'macbook' in term.lower() or 'laptop' in term.lower():
+                search_term_for_matching = "laptop macbook notebook"
+            elif 'desktop' in term.lower() or 'pc' in term.lower():
+                search_term_for_matching = "desktop computer pc"
+            elif 'monitor' in term.lower() or 'display' in term.lower():
+                search_term_for_matching = "monitor display screen"
+            elif 'mw2u3ll' in term.lower() or 'mba' in term.lower() or 'mbp' in term.lower():
+                # Apple part numbers - search for MacBooks
+                search_term_for_matching = "laptop macbook notebook"
+            elif len(term) >= 8 and re.match(r'^[A-Z0-9\-_]+$', term.upper()):
+                # Generic part number pattern - default to laptop search for common requests
+                search_term_for_matching = "laptop computer notebook"
+            else:
+                # Use the term as-is but also try laptop as fallback
+                search_term_for_matching = f"{term} laptop computer"
+            
+            debug_logger.info(f"🔍 Using consumer matching with term: '{search_term_for_matching}'")
+            consumer_results = get_consumer_focused_results(search_term_for_matching, original_asin)
+            
+            # Convert consumer matching results to products for the old ProductConnection format
+            final_products = []
+            
+            for item in consumer_results['results']:
+                product = item['product']
                 
-                # Try to find our Amazon product for this ASIN
-                if not original_amazon_product:
-                    original_amazon_product = get_amazon_product_by_asin(original_asin)
-                
-                if original_amazon_product:
-                    debug_logger.info(f"📦 Original Amazon product: {original_amazon_product.name}")
-                else:
-                    debug_logger.warning(f"❌ No Amazon product found for ASIN: {original_asin}")
+                # Skip Amazon placeholders (they don't have database products)
+                if item['isAmazonProduct'] and not hasattr(product, 'id'):
+                    continue
                     
-            except Exception as e:
-                debug_logger.error(f"❌ Error handling original Amazon product: {str(e)}")
+                # Add actual database products (both alternatives and accessories)
+                if hasattr(product, 'id'):
+                    final_products.append(product)
+            
+            debug_logger.info(f"📊 Consumer matching found {len(final_products)} database products")
+            
+            # Apply price filter if provided
+            if max_price is not None and final_products:
+                from decimal import Decimal
+                try:
+                    max_price_decimal = Decimal(str(max_price))
+                    filtered_products = []
+                    for product in final_products:
+                        # Always include demo products regardless of price (they may not have offers)
+                        if hasattr(product, 'is_demo') and product.is_demo:
+                            filtered_products.append(product)
+                            continue
+                            
+                        # For non-demo products, check if they have offers within price range
+                        offers = OfferModel.objects.filter(product=product, selling_price__lte=max_price_decimal)
+                        if offers.exists():
+                            filtered_products.append(product)
+                    final_products = filtered_products
+                    debug_logger.info(f"💰 Applied price filter: {len(final_products)} products (demo products always included)")
+                except (ValueError, TypeError):
+                    debug_logger.warning(f"⚠️ Invalid price filter: {max_price}")
+            
+            # Return queryset for compatibility with old Chrome extension format
+            if final_products:
+                product_ids = [p.id for p in final_products]
+                from django.db.models import Case, When, IntegerField
+                order_cases = [When(id=product_id, then=i) for i, product_id in enumerate(product_ids)]
+                result = ProductModel.objects.filter(id__in=product_ids).annotate(
+                    custom_order=Case(*order_cases, output_field=IntegerField())
+                ).order_by('custom_order')
+                
+                debug_logger.info(f"🎯 RESULT: Returning {result.count()} products via consumer matching")
+                return result
+            else:
+                debug_logger.info(f"🎯 RESULT: No products found via consumer matching")
+                return ProductModel.objects.none()
+                
+        except Exception as e:
+            debug_logger.error(f"❌ Consumer matching failed: {str(e)}")
+            # Fall back to old logic if consumer matching fails
+            pass
 
-        # FIND DATABASE ALTERNATIVES: Search for matching database products
-        debug_logger.info(f"🔍 Searching for database alternatives matching term: '{term}'")
+        # FALLBACK: Original logic (simplified)
+        debug_logger.info(f"🔄 Using fallback search logic")
         
-        # Start with all active products
         qs = ProductModel.objects.filter(status='active').order_by('name')
-        
-        # Exclude the original Amazon product from alternatives (avoid duplicates)
-        if original_amazon_product:
-            qs = qs.exclude(id=original_amazon_product.id)
         
         # Search by product name/description/part number
         if term:
-            # Try multiple search strategies:
-            # 1. Check if term contains a part number in parentheses
-            import re
-            paren_matches = re.findall(r'\(([A-Za-z0-9\-_]+)\)', term)
-            if paren_matches:
-                part_number_candidate = paren_matches[0]
-                debug_logger.info(f"📝 Extracted potential part number: {part_number_candidate}")
-                
-                # Try exact part number match first
-                part_match = qs.filter(part_number__iexact=part_number_candidate)
-                if part_match.exists():
-                    debug_logger.info(f"🎯 Found exact part number match!")
-                    qs = part_match
-                else:
-                    # Fall back to name search
-                    qs = qs.filter(
-                        Q(name__icontains=term) | 
-                        Q(description__icontains=term) |
-                        Q(part_number__icontains=term)
-                    )
-            else:
-                # Regular text search
-                qs = qs.filter(
-                    Q(name__icontains=term) | 
-                    Q(description__icontains=term) |
-                    Q(part_number__icontains=term)
-                )
+            qs = qs.filter(
+                Q(name__icontains=term) | 
+                Q(description__icontains=term) |
+                Q(part_number__icontains=term)
+            )
         
-        # Apply price filter to database alternatives only
+        # Apply price filter
         if max_price is not None:
             from decimal import Decimal
             try:
                 max_price_decimal = Decimal(str(max_price))
                 qs = qs.filter(offers__selling_price__lte=max_price_decimal).distinct()
-                debug_logger.info(f"💰 Applied price filter to database alternatives: <= ${max_price}")
             except (ValueError, TypeError):
-                debug_logger.warning(f"⚠️ Invalid price filter: {max_price}")
-        
-        # COMBINE RESULTS: Original Amazon product FIRST, then database alternatives
-        final_products = []
-        
-        # 1. Add original Amazon product FIRST (with affiliate link)
-        if original_amazon_product:
-            final_products.append(original_amazon_product)
-            debug_logger.info(f"✅ Added original Amazon product: {original_amazon_product.name}")
-        
-        # 2. Add database alternatives (with supplier offers)
-        database_alternatives = list(qs)
-        final_products.extend(database_alternatives)
-        
-        products_found = len(final_products)
-        amazon_count = 1 if original_amazon_product else 0
-        alternatives_count = len(database_alternatives)
-        
-        debug_logger.info(f"📊 Found {amazon_count} original Amazon + {alternatives_count} alternatives = {products_found} total products")
-        
-        # Log response details for debugging
-        if products_found > 0:
-            debug_logger.info(f"📋 Product results:")
-            for i, product in enumerate(final_products[:5]):  # Log first 5
-                is_original_amazon = (product == original_amazon_product)
-                offers = OfferModel.objects.filter(product=product)
-                affiliate_links = AffiliateLinkModel.objects.filter(product=product)
-                debug_logger.info(f"  {i+1}. {'[ORIGINAL AMAZON]' if is_original_amazon else '[ALTERNATIVE]'} {product.name} | Part: {product.part_number} | Offers: {offers.count()} | Links: {affiliate_links.count()}")
-        
-        # Log final results
-        result_description = []
-        if original_amazon_product:
-            result_description.append(f"Original Amazon (ASIN: {original_asin})")
-        if alternatives_count > 0:
-            result_description.append(f"{alternatives_count} alternatives")
-        
-        debug_logger.info(f"🎯 RESULT: Returning {products_found} products ({', '.join(result_description)})")
-        debug_logger.info(f"=== ENHANCED PRODUCT SEARCH END ===")
-        
-        # Return a queryset-like object that Django can handle
-        if final_products:
-            product_ids = [p.id for p in final_products]
-            # For DjangoFilterConnectionField, we need to return a proper queryset
-            # Create a custom ordering to preserve original-first order
-            if product_ids:
-                from django.db.models import Case, When, IntegerField
-                order_cases = [When(id=product_id, then=i) for i, product_id in enumerate(product_ids)]
-                return ProductModel.objects.filter(id__in=product_ids).annotate(
-                    custom_order=Case(*order_cases, output_field=IntegerField())
-                ).order_by('custom_order')
-            else:
-                return ProductModel.objects.filter(id__in=product_ids)
-        else:
-            return ProductModel.objects.none()
-
-    def resolve_search_by_asin(self, info, asin):
-        """Enhanced ASIN search with supplier-focused matching (No Amazon API)"""
-        try:
-            debug_logger.info(f"🔍 ASIN Search for: {asin}")
-            
-            # CORE BUSINESS LOGIC: Always ensure affiliate link exists for ASIN
-            affiliate_link = ensure_affiliate_link_exists(asin)
-            debug_logger.info(f"🔗 Affiliate link: {'✅ Found' if affiliate_link and affiliate_link.affiliate_url else '⏳ Pending/Created'}")
-            
-            # Try to find existing Amazon product for this ASIN
-            amazon_product = get_amazon_product_by_asin(asin)
-            
-            results = []
-            
-            if amazon_product:
-                # We have an Amazon product in our database
-                debug_logger.info(f"📦 Found Amazon product: {amazon_product.name}")
-                
-                # Ensure it has the affiliate link
-                if affiliate_link and affiliate_link.product != amazon_product:
-                    affiliate_link.product = amazon_product
-                    affiliate_link.save()
-                
-                result = ProductSearchResult(
-                    id=amazon_product.id,
-                    title=amazon_product.name,
-                    name=amazon_product.name,
-                    price="See Amazon for pricing",
-                    currency='USD',
-                    availability='Available on Amazon',
-                    product_url=f'https://amazon.com/dp/{asin}',
-                    image_url=amazon_product.main_image or "",
-                    asin=asin,
-                    match_confidence=0.95,
-                    match_type='amazon_product_asin_match',
-                    is_amazon_product=True,
-                    is_alternative=False,
-                    part_number=amazon_product.part_number,
-                    manufacturer=amazon_product.manufacturer,
-                    description=amazon_product.description or ""
-                )
-                result._source_product = amazon_product
-                results.append(result)
-                
-            else:
-                # No Amazon product found, create a placeholder with affiliate link
-                debug_logger.info(f"📦 No Amazon product found, creating placeholder")
-                
-                result = ProductSearchResult(
-                    title=f'Amazon Product (ASIN: {asin})',
-                    price='See Amazon for pricing',
-                    currency='USD',
-                    availability='Available on Amazon',
-                    product_url=f'https://amazon.com/dp/{asin}',
-                    image_url='',
-                    asin=asin,
-                    match_confidence=0.9,
-                    match_type='amazon_asin_placeholder',
-                    is_amazon_product=True,
-                    is_alternative=False
-                )
-                result._source_product = None
-                results.append(result)
-            
-            # Use consumer-focused matching to find supplier alternatives  
-            # Determine search term based on context (default to laptop for common ASINs)
-            search_term_for_alternatives = "laptop computer macbook"
-            consumer_results = get_consumer_focused_results(search_term_for_alternatives, asin)
-            
-            # Add supplier alternatives (but Amazon product should be first)
-            for item in consumer_results['results']:
-                if not item['isAmazonProduct']:  # Only add supplier products as alternatives
-                    product = item['product']
-                    
-                    result = ProductSearchResult(
-                        id=product.id,
-                        title=product.name,
-                        name=product.name,
-                        price="Contact for pricing",
-                        currency="USD",
-                        availability="Available",
-                        product_url="",
-                        image_url=product.main_image or "",
-                        asin="",
-                        match_confidence=item['matchConfidence'],
-                        match_type=item['matchType'],
-                        is_amazon_product=False,
-                        is_alternative=True,
-                        part_number=product.part_number,
-                        manufacturer=product.manufacturer,
-                        description=product.description or ""
-                    )
-                    result._source_product = product
-                    results.append(result)
-            
-            debug_logger.info(f"🎯 Returning {len(results)} results (Amazon primary + {len(results)-1} alternatives)")
-            return results
-            
-        except Exception as e:
-            debug_logger.error(f"❌ Error in search_by_asin: {e}")
-            print(f"Error in search_by_asin: {e}")
-            
-            # Even on error, ensure affiliate link exists
-            try:
-                ensure_affiliate_link_exists(asin)
-            except:
                 pass
-                
-            return []
-    
-    def resolve_consumer_product_search(self, info, term=None, asin=None):
-        """Consumer-focused product search (No Amazon API version)"""
-        if not term and not asin:
-            return []
         
-        try:
-            # Use the new consumer-focused matching
-            consumer_results = get_consumer_focused_results(term or "", asin)
-            
-            # Convert to GraphQL format
-            results = []
-            for item in consumer_results['results']:
-                product = item['product']
-                
-                if item['isAmazonProduct']:
-                    # Amazon placeholder - affiliate link handled by puppeteer
-                    result = ProductSearchResult(
-                        title=product.get('title', ''),
-                        price=product.get('price', 'See Amazon for pricing'),
-                        currency='USD',
-                        availability=product.get('availability', 'Available on Amazon'),
-                        product_url=product.get('detail_page_url', ''),
-                        image_url='',  # No image access without API
-                        asin=product.get('asin', ''),
-                        match_confidence=item['matchConfidence'],
-                        match_type=item['matchType'],
-                        is_amazon_product=True,
-                        is_alternative=item['isAlternative']
-                    )
-                    # No source product for Amazon placeholders
-                    result._source_product = None
-                else:
-                    # Supplier product with full data
-                    result = ProductSearchResult(
-                        id=product.id,
-                        title=product.name,
-                        name=product.name,
-                        price="Contact for pricing", 
-                        currency="USD",
-                        availability="Available",
-                        product_url="",
-                        image_url=product.main_image or "",
-                        asin="",
-                        match_confidence=item['matchConfidence'],
-                        match_type=item['matchType'],
-                        is_amazon_product=False,
-                        is_alternative=item['isAlternative'],
-                        part_number=product.part_number,
-                        manufacturer=product.manufacturer,
-                        description=product.description or ""
-                    )
-                    # Set the source product for backward compatibility
-                    result._source_product = product
-                
-                results.append(result)
-            
-            # Add fallback suggestion if available
-            if consumer_results.get('amazonFallbackSuggestion') and not results:
-                # Return a helpful suggestion result
-                suggestion_result = ProductSearchResult(
-                    title=f"Try searching Amazon for: {consumer_results['amazonFallbackSuggestion']}",
-                    price="Search Amazon",
-                    currency="USD",
-                    availability="Suggestion",
-                    product_url=f"https://amazon.com/s?k={consumer_results['amazonFallbackSuggestion'].replace(' ', '+')}",
-                    image_url="",
-                    asin="",
-                    match_confidence=0.5,
-                    match_type="amazon_search_suggestion",
-                    is_amazon_product=False,
-                    is_alternative=False
-                )
-                # No source product for suggestions
-                suggestion_result._source_product = None
-                results.append(suggestion_result)
-            
-            return results
-            
-        except Exception as e:
-            print(f"Error in consumer_product_search: {e}")
-            return []
-    
-    def resolve_unified_product_search(self, info, asin=None, part_number=None, name=None, url=None):
-        """
-        UNIFIED MULTI-RETAILER SEARCH
-        
-        This is the main entry point for Chrome extension searches across:
-        - Amazon (ASIN)
-        - Best Buy (SKU)  
-        - Staples (Item Number)
-        - CDW (Part Number)
-        - Newegg (Item Number)
-        
-        Priority: ASIN -> partNumber -> name -> URL parsing
-        """
-        try:
-            debug_logger.info(f"🔍 Unified Search - ASIN: {asin}, Part: {part_number}, Name: {name}, URL: {url}")
-            
-            # PRIORITY 1: ASIN Search (Amazon)
-            if asin:
-                debug_logger.info(f"🎯 Amazon ASIN Search: {asin}")
-                
-                # CORE BUSINESS LOGIC: Always ensure affiliate link exists for ASIN
-                affiliate_link = ensure_affiliate_link_exists(asin)
-                debug_logger.info(f"🔗 Affiliate link: {'✅ Found' if affiliate_link and affiliate_link.affiliate_url else '⏳ Pending/Created'}")
-                
-                # Try to find existing Amazon product for this ASIN
-                amazon_product = get_amazon_product_by_asin(asin)
-                
-                results = []
-                
-                if amazon_product:
-                    # We have an Amazon product in our database
-                    result = ProductSearchResult(
-                        id=amazon_product.id,
-                        title=amazon_product.name,
-                        name=amazon_product.name,
-                        part_number=amazon_product.part_number,
-                        description=amazon_product.description,
-                        main_image=amazon_product.main_image,
-                        manufacturer=amazon_product.manufacturer,
-                        asin=asin,
-                        is_amazon_product=True,
-                        is_alternative=False,
-                        match_type="exact_asin",
-                        match_confidence=1.0,
-                        # Enhanced relationship fields
-                        relationship_type="primary",
-                        relationship_category="amazon_affiliate",
-                        margin_opportunity="affiliate_only",
-                        revenue_type="affiliate_commission",
-                        affiliate_links=[affiliate_link] if affiliate_link else []
-                    )
-                    result._source_product = amazon_product
-                    results.append(result)
-                    debug_logger.info(f"✅ Found existing Amazon product: {amazon_product.name}")
-                else:
-                    # Create placeholder Amazon product
-                    result = ProductSearchResult(
-                        id=f"amazon_{asin}",
-                        title=f"Amazon Product {asin}",
-                        name=f"Amazon Product {asin}",
-                        part_number=asin,
-                        description=f"Amazon product with ASIN {asin}",
-                        asin=asin,
-                        is_amazon_product=True,
-                        is_alternative=False,
-                        match_type="placeholder_asin",
-                        match_confidence=1.0,
-                        # Enhanced relationship fields
-                        relationship_type="primary",
-                        relationship_category="amazon_affiliate",
-                        margin_opportunity="affiliate_only",
-                        revenue_type="affiliate_commission",
-                        affiliate_links=[affiliate_link] if affiliate_link else []
-                    )
-                    results.append(result)
-                    debug_logger.info(f"📝 Created placeholder Amazon product for ASIN: {asin}")
-                
-                # Find supplier alternatives using consumer matching
-                try:
-                    from products.consumer_matching import get_consumer_focused_results
-                    
-                    # Determine search term based on Amazon product or ASIN context
-                    search_term_for_matching = ""
-                    
-                    # PRIORITY 1: Try to extract from actual product data if available
-                    # Check Redis for recent product data from Chrome extension
-                    redis_kwargs = get_redis_connection()
-                    r = redis.Redis(**redis_kwargs)
-                    
-                    # Look for recent product data cached for this ASIN
-                    recent_product_data = None
-                    for task_key in r.scan_iter(match=f"pending_product_data:*"):
-                        task_data = r.get(task_key)
-                        if task_data:
-                            try:
-                                data = json.loads(task_data)
-                                if data.get('asin') == asin or asin in str(data):
-                                    recent_product_data = data
-                                    debug_logger.info(f"Found recent product data for ASIN {asin}")
-                                    break
-                            except:
-                                continue
-                    
-                    # Use actual product data if available
-                    if recent_product_data and recent_product_data.get('name'):
-                        actual_product_name = recent_product_data['name'].lower()
-                        debug_logger.info(f"Using actual product name for matching: {recent_product_data['name'][:50]}...")
-                        
-                        if 'macbook' in actual_product_name:
-                            search_term_for_matching = "laptop macbook notebook"
-                        elif 'laptop' in actual_product_name or 'notebook' in actual_product_name:
-                            search_term_for_matching = "laptop computer notebook"
-                        elif 'desktop' in actual_product_name or 'pc' in actual_product_name:
-                            search_term_for_matching = "desktop computer pc"
-                        elif 'monitor' in actual_product_name or 'display' in actual_product_name:
-                            search_term_for_matching = "monitor display screen"
-                        elif 'tablet' in actual_product_name or 'ipad' in actual_product_name:
-                            search_term_for_matching = "tablet ipad"
-                        elif 'phone' in actual_product_name or 'iphone' in actual_product_name:
-                            search_term_for_matching = "phone smartphone iphone"
-                        else:
-                            # Use key words from actual product name
-                            search_term_for_matching = " ".join(recent_product_data['name'].split()[:4])
-                    
-                    # PRIORITY 2: Use existing database product name if available
-                    elif amazon_product and amazon_product.name:
-                        product_name_lower = amazon_product.name.lower()
-                        if 'macbook' in product_name_lower or 'laptop' in product_name_lower:
-                            search_term_for_matching = "laptop macbook notebook"
-                        elif 'desktop' in product_name_lower or 'pc' in product_name_lower:
-                            search_term_for_matching = "desktop computer pc"
-                        elif 'monitor' in product_name_lower or 'display' in product_name_lower:
-                            search_term_for_matching = "monitor display screen"
-                        elif 'tablet' in product_name_lower or 'ipad' in product_name_lower:
-                            search_term_for_matching = "tablet ipad"
-                        elif 'phone' in product_name_lower or 'iphone' in product_name_lower:
-                            search_term_for_matching = "phone smartphone iphone"
-                        else:
-                            # Use first few words of product name
-                            search_term_for_matching = " ".join(amazon_product.name.split()[:3])
-                    
-                    # PRIORITY 3: Default based on common laptop ASINs (fallback)
-                    else:
-                        search_term_for_matching = "laptop computer notebook"
-                    
-                    debug_logger.info(f"Using search term for consumer matching: '{search_term_for_matching}'")
-                    consumer_results = get_consumer_focused_results(search_term_for_matching, asin)
-                    
-                    for item in consumer_results['results']:
-                        if not item['isAmazonProduct']:  # Only add supplier alternatives
-                            product = item['product']
-                            result = ProductSearchResult(
-                                id=product.id,
-                                name=product.name,
-                                part_number=product.part_number,
-                                description=product.description,
-                                main_image=product.main_image,
-                                manufacturer=product.manufacturer,
-                                is_amazon_product=False,
-                                is_alternative=item.get('isAlternative', False),  # Use the value from consumer matching
-                                match_type=item.get('matchType', 'supplier_alternative'),
-                                match_confidence=item.get('matchConfidence', 0.7),
-                                # Enhanced relationship fields
-                                relationship_type=item.get('relationshipType', 'equivalent'),
-                                relationship_category=item.get('relationshipCategory', 'supplier_alternative'),
-                                margin_opportunity=item.get('marginOpportunity', 'medium'),
-                                revenue_type=item.get('revenueType', 'product_sale'),
-                                offers=list(OfferModel.objects.filter(product=product).select_related('vendor')),
-                                affiliate_links=list(AffiliateLinkModel.objects.filter(product=product))
-                            )
-                            result._source_product = product
-                            results.append(result)
-                    
-                    debug_logger.info(f"🔍 Added {len([r for r in results if r.is_alternative])} supplier alternatives")
-                    
-                except Exception as e:
-                    debug_logger.error(f"❌ Consumer matching error: {e}")
-                
-                return results
-            
-            # PRIORITY 2: Part Number Search (CDW, Staples, etc.)
-            elif part_number:
-                debug_logger.info(f"🎯 Part Number Search: {part_number}")
-                return self.resolve_search_by_part_number(info, part_number)
-            
-            # PRIORITY 3: Name Search (Generic)
-            elif name:
-                debug_logger.info(f"🎯 Name Search: {name}")
-                return self.resolve_search_by_name(info, name)
-            
-            # PRIORITY 4: URL Parsing
-            elif url:
-                debug_logger.info(f"🎯 URL Parsing: {url}")
-                # Extract retailer-specific identifiers from URL
-                import re
-                
-                # Amazon ASIN extraction
-                asin_match = re.search(r'/dp/([A-Z0-9]{10})', url)
-                if asin_match:
-                    extracted_asin = asin_match.group(1)
-                    debug_logger.info(f"🔍 Extracted Amazon ASIN from URL: {extracted_asin}")
-                    return self.resolve_unifiedProductSearch(info, asin=extracted_asin)
-                
-                # TODO: Add Best Buy, Staples, CDW URL parsing
-                # Best Buy: /site/product-name/productId.p?skuId=XXXXXX
-                # Staples: /product_XXXXXX
-                # CDW: /product/product-name/XXXXXX
-                
-                debug_logger.info(f"⚠️  Could not extract product ID from URL: {url}")
-                return []
-            
-            else:
-                debug_logger.info("❌ No search parameters provided")
-                return []
-                
-        except Exception as e:
-            debug_logger.error(f"❌ Unified search error: {e}", exc_info=True)
-            return []
+        debug_logger.info(f"🎯 FALLBACK RESULT: Returning {qs.count()} products")
+        return qs
     
     def resolve_unifiedProductSearch(self, info, asin=None, partNumber=None, name=None, url=None):
         """
@@ -1455,7 +1013,6 @@ class Query(graphene.ObjectType):
                 if asin_match:
                     extracted_asin = asin_match.group(1)
                     debug_logger.info(f"🔍 Extracted Amazon ASIN from URL: {extracted_asin}")
-                    # Recursive call with extracted ASIN
                     return self.resolve_unifiedProductSearch(info, asin=extracted_asin)
                 
                 # TODO: Add Best Buy, Staples, CDW URL parsing
