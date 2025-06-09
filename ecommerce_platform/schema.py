@@ -1047,26 +1047,69 @@ class Query(graphene.ObjectType):
                     
                     # Determine search term based on Amazon product or ASIN context
                     search_term_for_matching = ""
-                    if amazon_product and amazon_product.name:
-                        # Extract key terms from Amazon product name for better matching
+                    
+                    # PRIORITY 1: Try to extract from actual product data if available
+                    # Check Redis for recent product data from Chrome extension
+                    redis_kwargs = get_redis_connection()
+                    r = redis.Redis(**redis_kwargs)
+                    
+                    # Look for recent product data cached for this ASIN
+                    recent_product_data = None
+                    for task_key in r.scan_iter(match=f"pending_product_data:*"):
+                        task_data = r.get(task_key)
+                        if task_data:
+                            try:
+                                data = json.loads(task_data)
+                                if data.get('asin') == asin or asin in str(data):
+                                    recent_product_data = data
+                                    debug_logger.info(f"Found recent product data for ASIN {asin}")
+                                    break
+                            except:
+                                continue
+                    
+                    # Use actual product data if available
+                    if recent_product_data and recent_product_data.get('name'):
+                        actual_product_name = recent_product_data['name'].lower()
+                        debug_logger.info(f"Using actual product name for matching: {recent_product_data['name'][:50]}...")
+                        
+                        if 'macbook' in actual_product_name:
+                            search_term_for_matching = "laptop macbook notebook"
+                        elif 'laptop' in actual_product_name or 'notebook' in actual_product_name:
+                            search_term_for_matching = "laptop computer notebook"
+                        elif 'desktop' in actual_product_name or 'pc' in actual_product_name:
+                            search_term_for_matching = "desktop computer pc"
+                        elif 'monitor' in actual_product_name or 'display' in actual_product_name:
+                            search_term_for_matching = "monitor display screen"
+                        elif 'tablet' in actual_product_name or 'ipad' in actual_product_name:
+                            search_term_for_matching = "tablet ipad"
+                        elif 'phone' in actual_product_name or 'iphone' in actual_product_name:
+                            search_term_for_matching = "phone smartphone iphone"
+                        else:
+                            # Use key words from actual product name
+                            search_term_for_matching = " ".join(recent_product_data['name'].split()[:4])
+                    
+                    # PRIORITY 2: Use existing database product name if available
+                    elif amazon_product and amazon_product.name:
                         product_name_lower = amazon_product.name.lower()
                         if 'macbook' in product_name_lower or 'laptop' in product_name_lower:
-                            search_term_for_matching = "laptop macbook"
+                            search_term_for_matching = "laptop macbook notebook"
                         elif 'desktop' in product_name_lower or 'pc' in product_name_lower:
-                            search_term_for_matching = "desktop computer"
+                            search_term_for_matching = "desktop computer pc"
                         elif 'monitor' in product_name_lower or 'display' in product_name_lower:
-                            search_term_for_matching = "monitor display"
+                            search_term_for_matching = "monitor display screen"
                         elif 'tablet' in product_name_lower or 'ipad' in product_name_lower:
-                            search_term_for_matching = "tablet"
+                            search_term_for_matching = "tablet ipad"
                         elif 'phone' in product_name_lower or 'iphone' in product_name_lower:
-                            search_term_for_matching = "phone smartphone"
+                            search_term_for_matching = "phone smartphone iphone"
                         else:
                             # Use first few words of product name
                             search_term_for_matching = " ".join(amazon_product.name.split()[:3])
-                    else:
-                        # Default laptop search for common laptop ASINs
-                        search_term_for_matching = "laptop computer"
                     
+                    # PRIORITY 3: Default based on common laptop ASINs (fallback)
+                    else:
+                        search_term_for_matching = "laptop computer notebook"
+                    
+                    debug_logger.info(f"Using search term for consumer matching: '{search_term_for_matching}'")
                     consumer_results = get_consumer_focused_results(search_term_for_matching, asin)
                     
                     for item in consumer_results['results']:
@@ -1223,26 +1266,69 @@ class Query(graphene.ObjectType):
                     
                     # Determine search term based on Amazon product or ASIN context
                     search_term_for_matching = ""
-                    if amazon_product and amazon_product.name:
-                        # Extract key terms from Amazon product name for better matching
+                    
+                    # PRIORITY 1: Try to extract from actual product data if available
+                    # Check Redis for recent product data from Chrome extension
+                    redis_kwargs = get_redis_connection()
+                    r = redis.Redis(**redis_kwargs)
+                    
+                    # Look for recent product data cached for this ASIN
+                    recent_product_data = None
+                    for task_key in r.scan_iter(match=f"pending_product_data:*"):
+                        task_data = r.get(task_key)
+                        if task_data:
+                            try:
+                                data = json.loads(task_data)
+                                if data.get('asin') == asin or asin in str(data):
+                                    recent_product_data = data
+                                    debug_logger.info(f"Found recent product data for ASIN {asin}")
+                                    break
+                            except:
+                                continue
+                    
+                    # Use actual product data if available
+                    if recent_product_data and recent_product_data.get('name'):
+                        actual_product_name = recent_product_data['name'].lower()
+                        debug_logger.info(f"Using actual product name for matching: {recent_product_data['name'][:50]}...")
+                        
+                        if 'macbook' in actual_product_name:
+                            search_term_for_matching = "laptop macbook notebook"
+                        elif 'laptop' in actual_product_name or 'notebook' in actual_product_name:
+                            search_term_for_matching = "laptop computer notebook"
+                        elif 'desktop' in actual_product_name or 'pc' in actual_product_name:
+                            search_term_for_matching = "desktop computer pc"
+                        elif 'monitor' in actual_product_name or 'display' in actual_product_name:
+                            search_term_for_matching = "monitor display screen"
+                        elif 'tablet' in actual_product_name or 'ipad' in actual_product_name:
+                            search_term_for_matching = "tablet ipad"
+                        elif 'phone' in actual_product_name or 'iphone' in actual_product_name:
+                            search_term_for_matching = "phone smartphone iphone"
+                        else:
+                            # Use key words from actual product name
+                            search_term_for_matching = " ".join(recent_product_data['name'].split()[:4])
+                    
+                    # PRIORITY 2: Use existing database product name if available
+                    elif amazon_product and amazon_product.name:
                         product_name_lower = amazon_product.name.lower()
                         if 'macbook' in product_name_lower or 'laptop' in product_name_lower:
-                            search_term_for_matching = "laptop macbook"
+                            search_term_for_matching = "laptop macbook notebook"
                         elif 'desktop' in product_name_lower or 'pc' in product_name_lower:
-                            search_term_for_matching = "desktop computer"
+                            search_term_for_matching = "desktop computer pc"
                         elif 'monitor' in product_name_lower or 'display' in product_name_lower:
-                            search_term_for_matching = "monitor display"
+                            search_term_for_matching = "monitor display screen"
                         elif 'tablet' in product_name_lower or 'ipad' in product_name_lower:
-                            search_term_for_matching = "tablet"
+                            search_term_for_matching = "tablet ipad"
                         elif 'phone' in product_name_lower or 'iphone' in product_name_lower:
-                            search_term_for_matching = "phone smartphone"
+                            search_term_for_matching = "phone smartphone iphone"
                         else:
                             # Use first few words of product name
                             search_term_for_matching = " ".join(amazon_product.name.split()[:3])
-                    else:
-                        # Default laptop search for common laptop ASINs
-                        search_term_for_matching = "laptop computer"
                     
+                    # PRIORITY 3: Default based on common laptop ASINs (fallback)
+                    else:
+                        search_term_for_matching = "laptop computer notebook"
+                    
+                    debug_logger.info(f"Using search term for consumer matching: '{search_term_for_matching}'")
                     consumer_results = get_consumer_focused_results(search_term_for_matching, asin)
                     
                     for item in consumer_results['results']:

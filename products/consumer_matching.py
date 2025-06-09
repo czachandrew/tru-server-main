@@ -237,46 +237,65 @@ class ConsumerProductMatcher:
         return result
     
     def _enhanced_supplier_search(self, search_term: str) -> List[Product]:
-        """Enhanced search of supplier products with multiple strategies"""
+        """Enhanced search across multiple strategies to find the best supplier matches"""
         
-        # Strategy 1: Exact part number or model matching
-        exact_matches = self._exact_part_search(search_term)
+        print(f"🔍 ENHANCED SEARCH: Starting search with term: '{search_term}'")
         
-        # Strategy 2: Description keyword matching (weighted by relevance)
-        description_matches = self._weighted_description_search(search_term)
+        all_results = []
         
-        # Strategy 3: Fuzzy name matching
+        # Strategy 1: Demo products (high priority for alternatives)
+        demo_products = self._demo_product_search(search_term)
+        for product in demo_products:
+            all_results.append((product, 'demo_product', 10))  # High score for demo products
+        
+        # Strategy 2: Consumer-relevant description mining
+        consumer_products = self._consumer_description_mining(search_term)
+        for product in consumer_products:
+            if product not in [r[0] for r in all_results]:
+                all_results.append((product, 'consumer_description', 8))
+        
+        # Strategy 3: Exact part number matches
+        part_matches = self._exact_part_search(search_term)
+        for product in part_matches:
+            if product not in [r[0] for r in all_results]:
+                all_results.append((product, 'exact_part', 9))
+        
+        # Strategy 4: Weighted description search
+        desc_matches = self._weighted_description_search(search_term)
+        for product in desc_matches:
+            if product not in [r[0] for r in all_results]:
+                all_results.append((product, 'weighted_description', 7))
+        
+        # Strategy 5: Fuzzy name search
         name_matches = self._fuzzy_name_search(search_term)
+        for product in name_matches:
+            if product not in [r[0] for r in all_results]:
+                all_results.append((product, 'fuzzy_name', 6))
         
-        # Strategy 4: Enhanced description mining for consumer products
-        consumer_matches = self._consumer_description_mining(search_term)
+        # Sort by score (highest first) and return products
+        all_results.sort(key=lambda x: x[2], reverse=True)
+        results = [result[0] for result in all_results]
         
-        # Strategy 5: DEMO PRODUCTS - Search demo products that match the term
-        demo_matches = self._demo_product_search(search_term)
-        
-        # Combine and deduplicate
-        seen_ids = set()
-        results = []
-        
-        # Priority order: demo > exact > consumer > description > name
-        for product_list in [demo_matches, exact_matches, consumer_matches, description_matches, name_matches]:
-            for product in product_list:
-                if product.id not in seen_ids:
-                    # FILTER OUT ACCESSORIES - they should only be in accessory_products
-                    if not self._is_accessory_product(product):
-                        seen_ids.add(product.id)
-                        results.append(product)
-                        if len(results) >= 15:  # Limit total results
-                            break
-            if len(results) >= 15:
+        # Exclude accessories from main search results 
+        filtered_results = []
+        for product in results:
+            if not self._is_accessory_product(product):
+                filtered_results.append(product)
+            if len(filtered_results) >= 15:
                 break
         
-        return results
+        print(f"🔍 ENHANCED SEARCH: Found {len(filtered_results)} non-accessory products")
+        for i, product in enumerate(filtered_results[:5]):
+            print(f"  {i+1}. {product.name} (Demo: {product.is_demo}) (Part: {product.part_number})")
+        
+        return filtered_results
     
     def _demo_product_search(self, search_term: str) -> List[Product]:
         """Search demo products that match the search term"""
         if not search_term:
             return []
+        
+        print(f"🔍 DEMO SEARCH: Searching for demo products with term: '{search_term}'")
         
         keywords = search_term.lower().split()
         query = Q(is_demo=True)  # Only demo products
@@ -291,7 +310,12 @@ class ConsumerProductMatcher:
         
         query &= name_query
         
-        return list(Product.objects.filter(query)[:5])
+        demo_products = list(Product.objects.filter(query)[:5])
+        print(f"🔍 DEMO SEARCH: Found {len(demo_products)} demo products")
+        for product in demo_products:
+            print(f"  - {product.name} (Part: {product.part_number})")
+        
+        return demo_products
     
     def _consumer_description_mining(self, search_term: str) -> List[Product]:
         """Mine descriptions for consumer product references"""
@@ -410,10 +434,15 @@ class ConsumerProductMatcher:
         product_name = product.name.lower()
         product_desc = (product.description or "").lower()
         
+        print(f"🔍 CHECKING ALTERNATIVE: {product.name}")
+        print(f"  Category: {category}")
+        print(f"  Name: '{product_name}'")
+        print(f"  Description: '{product_desc[:100]}...'")
+        
         # Define what constitutes actual alternatives for each category
         alternative_indicators = {
-            'laptops': ['laptop', 'notebook', 'macbook', 'thinkpad', 'inspiron', 'pavilion'],
-            'desktops': ['desktop', 'pc', 'workstation', 'computer', 'imac', 'optiplex'],
+            'laptops': ['laptop', 'notebook', 'macbook', 'thinkpad', 'inspiron', 'pavilion', 'ultrabook', 'elitebook', 'latitude', 'xps'],
+            'desktops': ['desktop', 'pc', 'workstation', 'computer', 'imac', 'optiplex', 'all-in-one'],
             'monitors': ['monitor', 'display', 'screen'],
             'gaming_devices': ['gaming laptop', 'gaming desktop', 'gaming pc']
         }
@@ -427,15 +456,22 @@ class ConsumerProductMatcher:
         # Check if this is clearly an accessory
         for accessory_term in accessory_indicators:
             if accessory_term in product_name or accessory_term in product_desc:
+                print(f"  ❌ REJECTED: Contains accessory term '{accessory_term}'")
                 return False  # This is an accessory, not an alternative
         
         # Check if this is actually an alternative for the category
         category_alternatives = alternative_indicators.get(category, [])
         for alt_term in category_alternatives:
             if alt_term in product_name or alt_term in product_desc:
+                print(f"  ✅ ACCEPTED: Contains alternative term '{alt_term}'")
                 return True  # This is an actual alternative
         
-        # If we can't determine, err on the side of caution
+        # Special case: For demo products, be more lenient
+        if hasattr(product, 'is_demo') and product.is_demo:
+            print(f"  ✅ ACCEPTED: Demo product (overriding strict matching)")
+            return True
+        
+        print(f"  ❌ REJECTED: No matching alternative terms found")
         return False
 
     def _is_accessory_product(self, product: Product) -> bool:
