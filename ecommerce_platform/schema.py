@@ -887,23 +887,37 @@ class Query(graphene.ObjectType):
                     # PRIORITY 3: Use the actual request parameters that we have
                     # The Chrome extension provides name, partNumber, etc. - USE THOSE!
                     elif name:
-                        # Use the actual product name from the request
-                        name_lower = name.lower()
-                        debug_logger.info(f"Using provided product name: {name[:50]}...")
+                        # Use smart extraction to get clean search terms
+                        from products.consumer_matching import smart_extract_search_terms
                         
-                        if 'macbook' in name_lower or ('laptop' in name_lower and 'cable' not in name_lower):
-                            search_term_for_matching = "laptop macbook notebook"
-                        elif 'desktop' in name_lower or 'pc' in name_lower:
-                            search_term_for_matching = "desktop computer pc"
-                        elif 'monitor' in name_lower or 'display' in name_lower:
+                        debug_logger.info(f"Using smart extraction for: {name[:50]}...")
+                        extracted_data = smart_extract_search_terms(name)
+                        debug_logger.info(f"Extracted product type: {extracted_data.get('type')}, clean terms: {extracted_data.get('clean_terms')}")
+                        
+                        # Use the extracted clean terms for search
+                        if extracted_data['type'] == 'cable':
+                            if extracted_data.get('subtype') == 'hdmi':
+                                search_term_for_matching = "hdmi cable display"
+                            elif extracted_data.get('subtype') == 'usb':
+                                search_term_for_matching = "usb cable adapter"
+                            else:
+                                search_term_for_matching = " ".join(extracted_data['clean_terms'])
+                        
+                        elif extracted_data['type'] == 'laptop':
+                            search_term_for_matching = " ".join(extracted_data['clean_terms'])
+                        
+                        elif extracted_data['type'] == 'monitor':
                             search_term_for_matching = "monitor display screen"
-                        elif 'tablet' in name_lower or 'ipad' in name_lower:
-                            search_term_for_matching = "tablet ipad"
-                        elif 'phone' in name_lower or 'iphone' in name_lower:
-                            search_term_for_matching = "phone smartphone iphone"
+                        
+                        elif extracted_data['type'] == 'adapter':
+                            search_term_for_matching = " ".join(extracted_data['clean_terms'])
+                        
                         else:
-                            # Use the actual name - don't force it into laptop category!
-                            search_term_for_matching = " ".join(name.split()[:4])
+                            # For unknown types, use the clean extracted terms
+                            search_term_for_matching = " ".join(extracted_data['clean_terms'][:3])
+                            debug_logger.info(f"Unknown type, using clean terms: {search_term_for_matching}")
+                        
+                        debug_logger.info(f"Final search term after smart extraction: '{search_term_for_matching}'")
                     
                     # PRIORITY 4: Use partNumber if provided
                     elif partNumber:

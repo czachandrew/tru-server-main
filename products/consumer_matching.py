@@ -765,3 +765,193 @@ def _classify_product_relationship(product: Product, search_context: str) -> Dic
         'margin_opportunity': 'low',
         'revenue_type': 'product_sale'
     } 
+
+def smart_extract_search_terms(product_name: str) -> Dict[str, any]:
+    """
+    Intelligently extract clean search terms from verbose Amazon product names
+    Returns structured data about the product type and relevant search terms
+    """
+    name_lower = product_name.lower()
+    
+    # Step 1: Identify core product type
+    product_types = {
+        'laptop': ['macbook', 'laptop', 'notebook', 'ultrabook', 'thinkpad', 'chromebook'],
+        'desktop': ['desktop', 'pc', 'workstation', 'all-in-one', 'imac', 'mini pc'],
+        'monitor': ['monitor', 'display', 'screen', 'lcd', 'led', 'oled'],
+        'cable': ['cable', 'cord', 'wire'],
+        'adapter': ['adapter', 'converter', 'dongle', 'hub'],
+        'power': ['charger', 'power supply', 'power adapter', 'psu'],
+        'storage': ['ssd', 'hard drive', 'hdd', 'nvme', 'storage'],
+        'networking': ['router', 'modem', 'switch', 'access point', 'wifi'],
+        'audio': ['headphones', 'speakers', 'soundbar', 'earbuds', 'microphone'],
+        'gaming': ['gaming', 'xbox', 'playstation', 'nintendo', 'steam deck'],
+        'phone': ['iphone', 'samsung', 'pixel', 'smartphone', 'phone'],
+        'tablet': ['ipad', 'tablet', 'kindle', 'surface']
+    }
+    
+    detected_type = None
+    for product_type, keywords in product_types.items():
+        if any(keyword in name_lower for keyword in keywords):
+            detected_type = product_type
+            break
+    
+    # Step 2: Extract specific product identifiers
+    # HDMI cables
+    if 'hdmi' in name_lower:
+        detected_type = 'cable'
+        version = re.search(r'hdmi\s*(\d+\.?\d*)', name_lower)
+        return {
+            'type': 'cable',
+            'subtype': 'hdmi',
+            'version': version.group(1) if version else None,
+            'clean_terms': ['hdmi', 'cable'],
+            'technical_specs': extract_cable_specs(name_lower)
+        }
+    
+    # USB cables/adapters
+    elif 'usb' in name_lower:
+        detected_type = 'adapter' if 'adapter' in name_lower else 'cable'
+        usb_version = re.search(r'usb[-\s]*([c3-9]|3\.0|2\.0)', name_lower)
+        return {
+            'type': detected_type,
+            'subtype': 'usb',
+            'version': usb_version.group(1) if usb_version else None,
+            'clean_terms': ['usb', detected_type],
+            'technical_specs': extract_cable_specs(name_lower)
+        }
+    
+    # MacBooks (special handling)
+    elif 'macbook' in name_lower:
+        model = 'pro' if 'pro' in name_lower else 'air' if 'air' in name_lower else None
+        size = re.search(r'(\d+)[-\s]*inch', name_lower)
+        return {
+            'type': 'laptop',
+            'subtype': 'macbook',
+            'model': model,
+            'size': size.group(1) if size else None,
+            'clean_terms': ['macbook', model, 'laptop'] if model else ['macbook', 'laptop'],
+            'technical_specs': extract_laptop_specs(name_lower)
+        }
+    
+    # Laptops (general)
+    elif detected_type == 'laptop':
+        brand = extract_brand(name_lower, ['dell', 'hp', 'lenovo', 'asus', 'acer', 'msi', 'alienware'])
+        size = re.search(r'(\d+)[-\s]*inch', name_lower)
+        return {
+            'type': 'laptop',
+            'subtype': brand if brand else 'generic',
+            'size': size.group(1) if size else None,
+            'clean_terms': [term for term in ['laptop', 'notebook', brand] if term],
+            'technical_specs': extract_laptop_specs(name_lower)
+        }
+    
+    # Monitors
+    elif detected_type == 'monitor':
+        size = re.search(r'(\d+)[-\s]*inch', name_lower)
+        resolution = extract_resolution(name_lower)
+        return {
+            'type': 'monitor',
+            'subtype': 'display',
+            'size': size.group(1) if size else None,
+            'resolution': resolution,
+            'clean_terms': ['monitor', 'display', 'screen'],
+            'technical_specs': {'size': size.group(1) if size else None, 'resolution': resolution}
+        }
+    
+    # Fallback: extract key terms and clean them
+    else:
+        clean_terms = extract_clean_terms(product_name)
+        return {
+            'type': detected_type or 'unknown',
+            'subtype': None,
+            'clean_terms': clean_terms,
+            'technical_specs': {},
+            'original_name': product_name[:50] + '...' if len(product_name) > 50 else product_name
+        }
+
+def extract_cable_specs(name_lower: str) -> Dict[str, str]:
+    """Extract technical specs relevant to cables"""
+    specs = {}
+    
+    # Length
+    length = re.search(r'(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|meter|m)\b', name_lower)
+    if length:
+        specs['length'] = length.group(1)
+    
+    # Speed/bandwidth
+    speed = re.search(r'(\d+)\s*gbps', name_lower)
+    if speed:
+        specs['speed'] = speed.group(1)
+    
+    # Resolution support
+    if '4k' in name_lower:
+        specs['resolution'] = '4k'
+    elif '8k' in name_lower:
+        specs['resolution'] = '8k'
+    
+    return specs
+
+def extract_laptop_specs(name_lower: str) -> Dict[str, str]:
+    """Extract technical specs relevant to laptops"""
+    specs = {}
+    
+    # Screen size
+    size = re.search(r'(\d+)[-\s]*inch', name_lower)
+    if size:
+        specs['screen_size'] = size.group(1)
+    
+    # Processor
+    if 'm1' in name_lower or 'm2' in name_lower:
+        specs['processor'] = 'm1' if 'm1' in name_lower else 'm2'
+    elif 'intel' in name_lower:
+        specs['processor'] = 'intel'
+    elif 'amd' in name_lower:
+        specs['processor'] = 'amd'
+    
+    return specs
+
+def extract_resolution(name_lower: str) -> Optional[str]:
+    """Extract display resolution"""
+    if '4k' in name_lower or '3840' in name_lower:
+        return '4k'
+    elif '1440p' in name_lower or '2560' in name_lower:
+        return '1440p'
+    elif '1080p' in name_lower or '1920' in name_lower:
+        return '1080p'
+    return None
+
+def extract_brand(name_lower: str, brand_list: List[str]) -> Optional[str]:
+    """Extract brand name from product name"""
+    for brand in brand_list:
+        if brand in name_lower:
+            return brand
+    return None
+
+def extract_clean_terms(product_name: str) -> List[str]:
+    """Extract clean, relevant terms from any product name"""
+    name_lower = product_name.lower()
+    
+    # Remove marketing fluff
+    marketing_noise = [
+        'certified', 'premium', 'ultra', 'high speed', 'professional', 'pro', 'max',
+        'upgrade', 'enhanced', 'advanced', 'superior', 'quality', 'durable',
+        'compatible', 'support', 'supports', 'perfect', 'ideal', 'best',
+        'new', 'latest', 'improved', 'optimized', 'designed'
+    ]
+    
+    # Remove brackets and parentheses content (usually specs/marketing)
+    clean_name = re.sub(r'\[.*?\]|\(.*?\)', '', name_lower)
+    
+    # Remove marketing noise
+    for noise in marketing_noise:
+        clean_name = clean_name.replace(noise, ' ')
+    
+    # Extract meaningful words (3+ characters, not numbers-only)
+    words = re.findall(r'\b[a-z]{3,}\b', clean_name)
+    
+    # Remove stop words
+    stop_words = {'the', 'and', 'for', 'with', 'from', 'this', 'that', 'are', 'you', 'your'}
+    meaningful_words = [word for word in words if word not in stop_words]
+    
+    # Return top 5 most relevant terms
+    return meaningful_words[:5] 
