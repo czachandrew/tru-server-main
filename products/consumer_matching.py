@@ -39,6 +39,16 @@ class ConsumerMatchResult:
     confidence_score: float = 0.0
     amazon_fallback_suggestion: Optional[str] = None  # Suggest search terms for Amazon
 
+@dataclass 
+class ProductSpecs:
+    """Extracted product specifications for relevance scoring"""
+    length: Optional[float] = None  # Cable length in feet
+    price: Optional[float] = None   # Price from offers
+    resolution: Optional[str] = None  # 4K, 8K, 1080p
+    speed: Optional[str] = None     # 48Gbps, etc.
+    version: Optional[str] = None   # HDMI 2.1, USB 3.0, etc.
+    features: List[str] = field(default_factory=list)  # HDR, eARC, etc.
+
 class ConsumerProductMatcher:
     """Enhanced matcher focusing on supplier inventory (No Amazon API)"""
     
@@ -285,9 +295,45 @@ class ConsumerProductMatcher:
             if product not in [r[0] for r in all_results]:
                 all_results.append((product, 'fuzzy_name', 6))
         
-        # Sort by score (highest first) and return products
-        all_results.sort(key=lambda x: x[2], reverse=True)
-        results = [result[0] for result in all_results]
+        # SMART RELEVANCE SCORING: Re-rank based on specifications
+        print(f"🧠 SMART RANKING: Applying relevance scoring...")
+        
+        # Extract reference specs from search term or use matcher's reference specs
+        reference_specs = getattr(self, '_reference_specs', ProductSpecs())
+        search_lower = search_term.lower()
+        
+        # If no reference specs provided, try to infer from search term
+        if not reference_specs.length and not reference_specs.price:
+            # Try to extract reference specs from search term
+            if 'hdmi' in search_lower and 'cable' in search_lower:
+                # Default HDMI cable assumptions (budget range)
+                reference_specs.length = 6.0  # Typical short cable
+                reference_specs.price = 15.0  # Budget price range
+                reference_specs.resolution = '4k'
+                reference_specs.features = ['hdr']
+                print(f"🔧 Using default HDMI reference specs: {reference_specs.length}ft, ${reference_specs.price}")
+            elif 'usb' in search_lower and 'cable' in search_lower:
+                reference_specs.length = 3.0  # Typical USB cable
+                reference_specs.price = 12.0  # Budget USB cable
+                print(f"🔧 Using default USB reference specs: {reference_specs.length}ft, ${reference_specs.price}")
+        
+        # Calculate relevance scores for all results
+        scored_results = []
+        for product, match_type, base_score in all_results:
+            candidate_specs = extract_product_specs(product)
+            
+            # Calculate smart relevance score
+            relevance_score = calculate_relevance_score(reference_specs, candidate_specs, base_score)
+            
+            print(f"  📊 {product.name[:50]}...")
+            print(f"      Base: {base_score:.1f}, Relevance: {relevance_score:.2f}")
+            print(f"      Price: ${candidate_specs.price or 'N/A'}, Length: {candidate_specs.length or 'N/A'}ft")
+            
+            scored_results.append((product, match_type, relevance_score))
+        
+        # Sort by relevance score (highest first)
+        scored_results.sort(key=lambda x: x[2], reverse=True)
+        results = [result[0] for result in scored_results]
         
         # Apply better filtering for accessory searches
         if any(accessory_term in search_term.lower() for accessory_term in ['cable', 'cord', 'adapter']):
@@ -302,9 +348,10 @@ class ConsumerProductMatcher:
                 if len(filtered_results) >= 15:
                     break
         
-        print(f"🔍 ENHANCED SEARCH: Found {len(filtered_results)} filtered products")
+        print(f"🔍 ENHANCED SEARCH: Found {len(filtered_results)} filtered products with smart ranking")
         for i, product in enumerate(filtered_results[:5]):
-            print(f"  {i+1}. {product.name} (Demo: {product.is_demo}) (Part: {product.part_number})")
+            specs = extract_product_specs(product)
+            print(f"  {i+1}. {product.name} (${specs.price or 'N/A'}) ({specs.length or '?'}ft)")
         
         return filtered_results
     
@@ -650,14 +697,30 @@ class ConsumerProductMatcher:
         return filtered
 
 # Updated integration function
-def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
+def get_consumer_focused_results(search_term: str, asin: str = None, reference_product_name: str = None) -> Dict:
     """
     Main interface for consumer-focused product matching (No Amazon API version)
     Focuses on supplier inventory with Amazon affiliate links only when ASIN provided
     Returns enhanced relationship classification for better UI display
+    
+    Args:
+        search_term: The search query (e.g., "hdmi cable")
+        asin: Optional Amazon ASIN for affiliate link creation
+        reference_product_name: Optional reference product for better matching (e.g., the Silkland cable)
     """
     matcher = ConsumerProductMatcher()
+    
+    # If reference product provided, extract specs for better matching  
+    if reference_product_name:
+        # Update the matcher with reference specs for smarter ranking
+        matcher._reference_specs = extract_product_specs(None, reference_product_name)
+        print(f"📋 REFERENCE PRODUCT: {reference_product_name[:60]}...")
+        print(f"   Extracted specs: Length={matcher._reference_specs.length}ft, Price=${matcher._reference_specs.price or 'N/A'}")
+    
     result = matcher.match_consumer_product(search_term, asin)
+    
+    # ADDITIONAL: Search for Amazon alternatives (like ANKER) 
+    amazon_alternatives = _search_amazon_alternatives(search_term)
     
     # Format for GraphQL response with enhanced relationship data
     formatted_results = []
@@ -727,6 +790,20 @@ def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
             'revenueType': 'cross_sell_opportunity'
         })
     
+    # Add Amazon alternatives (like ANKER cable)
+    for amazon_alt in amazon_alternatives:
+        formatted_results.append({
+            'product': amazon_alt,
+            'matchType': 'amazon_alternative',
+            'matchConfidence': 0.8,
+            'isAmazonProduct': True,
+            'isAlternative': True,
+            'relationshipType': 'equivalent',
+            'relationshipCategory': 'amazon_alternative',
+            'marginOpportunity': 'affiliate_only',
+            'revenueType': 'affiliate_commission'
+        })
+    
     response = {
         'results': formatted_results,
         'searchStrategy': result.search_strategy,
@@ -738,6 +815,24 @@ def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
         response['amazonFallbackSuggestion'] = result.amazon_fallback_suggestion
     
     return response 
+
+def _search_amazon_alternatives(search_term: str) -> List[Dict]:
+    """Search for known Amazon alternatives (like ANKER, AmazonBasics, etc.)"""
+    # For now, return mock ANKER cable data
+    # In production, this would query your Amazon product database or API
+    
+    if 'hdmi' in search_term.lower():
+        return [{
+            'name': 'ANKER Ultra High Speed HDMI Cable (4K@120Hz, 8K@60Hz, 48Gbps) - 6ft',
+            'asin': 'B08M5HSRPT',  # Example ASIN
+            'price': '$12.99',
+            'detail_page_url': 'https://amazon.com/dp/B08M5HSRPT',
+            'availability': 'Available on Amazon',
+            'brand': 'ANKER',
+            'features': ['4K@120Hz', '8K@60Hz', '48Gbps', 'Braided']
+        }]
+    
+    return []
 
 def _determine_enhanced_relationship(match_type: str, source: str, is_primary: bool) -> Dict[str, str]:
     """
@@ -1254,3 +1349,131 @@ def extract_clean_terms(product_name: str) -> List[str]:
     
     # Return top 5 most relevant terms
     return meaningful_words[:5] 
+
+def extract_product_specs(product: Product, product_name_override: str = None) -> ProductSpecs:
+    """Extract technical specifications from product name and description"""
+    # Handle case where only product name is provided (no product object)
+    if product is None and product_name_override:
+        text = product_name_override
+    else:
+        text = product_name_override or product.name
+        if product and product.description:
+            text += " " + product.description
+    
+    text_lower = text.lower()
+    
+    specs = ProductSpecs()
+    
+    # Extract cable length
+    length_patterns = [
+        r'(\d+(?:\.\d+)?)\s*(?:ft|feet|foot)',
+        r'(\d+(?:\.\d+)?)\s*(?:m|meter|metres)',
+        r'(\d+)-(?:ft|foot|feet)',
+    ]
+    for pattern in length_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            specs.length = float(match.group(1))
+            break
+    
+    # Extract resolution
+    if '8k' in text_lower or '8k@' in text_lower:
+        specs.resolution = '8k'
+    elif '4k' in text_lower or '4k@' in text_lower:
+        specs.resolution = '4k'  
+    elif '1440p' in text_lower:
+        specs.resolution = '1440p'
+    elif '1080p' in text_lower:
+        specs.resolution = '1080p'
+    
+    # Extract speed/bandwidth
+    speed_match = re.search(r'(\d+)\s*gbps', text_lower)
+    if speed_match:
+        specs.speed = speed_match.group(1) + 'gbps'
+    
+    # Extract version
+    version_patterns = [
+        r'hdmi\s*(\d+\.\d+)',
+        r'usb\s*(\d+\.\d+)',
+        r'usb[-\s]*([c3-9])',
+    ]
+    for pattern in version_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            specs.version = match.group(1)
+            break
+    
+    # Extract features
+    feature_keywords = ['hdr', 'hdr10', 'eARC', 'hdcp', 'dolby', 'atmos', 'braided']
+    specs.features = [keyword for keyword in feature_keywords if keyword.lower() in text_lower]
+    
+    # Get price from offers (only if product object exists)
+    if product:
+        try:
+            offers = list(product.offers.all())
+            if offers:
+                specs.price = float(offers[0].selling_price)
+        except:
+            pass
+    
+    return specs
+
+def calculate_relevance_score(reference_specs: ProductSpecs, candidate_specs: ProductSpecs, base_score: float = 1.0) -> float:
+    """Calculate relevance score based on spec similarity"""
+    score = base_score
+    
+    # Price similarity (most important for consumers)
+    if reference_specs.price and candidate_specs.price:
+        ref_price = reference_specs.price
+        cand_price = candidate_specs.price
+        
+        # Prefer similar price ranges
+        if ref_price <= 20:  # Budget range
+            if cand_price <= 30:
+                score += 0.5  # Good match
+            elif cand_price <= 50:
+                score += 0.2  # Acceptable
+            else:
+                score -= 0.3  # Too expensive
+        elif ref_price <= 50:  # Mid range
+            if 20 <= cand_price <= 80:
+                score += 0.4  # Good match
+            else:
+                score -= 0.2
+        else:  # Premium range
+            if cand_price >= 30:
+                score += 0.3  # Good match
+            else:
+                score -= 0.1  # Too cheap (might be lower quality)
+    
+    # Length similarity (important for cables)
+    if reference_specs.length and candidate_specs.length:
+        length_diff = abs(reference_specs.length - candidate_specs.length)
+        if length_diff <= 1:  # Very close
+            score += 0.4
+        elif length_diff <= 3:  # Close enough
+            score += 0.2
+        elif length_diff <= 6:  # Somewhat close
+            score += 0.1
+        else:  # Too different
+            score -= 0.2
+    
+    # Resolution/quality matching
+    if reference_specs.resolution and candidate_specs.resolution:
+        if reference_specs.resolution == candidate_specs.resolution:
+            score += 0.3  # Exact match
+        elif (reference_specs.resolution in ['4k', '8k'] and 
+              candidate_specs.resolution in ['4k', '8k']):
+            score += 0.1  # Both high-res
+    
+    # Speed/bandwidth matching
+    if reference_specs.speed and candidate_specs.speed:
+        if reference_specs.speed == candidate_specs.speed:
+            score += 0.2
+    
+    # Feature overlap
+    if reference_specs.features and candidate_specs.features:
+        common_features = set(reference_specs.features) & set(candidate_specs.features)
+        score += len(common_features) * 0.1
+    
+    return max(score, 0.1)  # Minimum score 
