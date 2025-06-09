@@ -884,9 +884,35 @@ class Query(graphene.ObjectType):
                             # Use first few words of product name
                             search_term_for_matching = " ".join(amazon_product.name.split()[:3])
                     
-                    # PRIORITY 3: Default based on common laptop ASINs (fallback)
+                    # PRIORITY 3: Use the actual request parameters that we have
+                    # The Chrome extension provides name, partNumber, etc. - USE THOSE!
+                    elif name:
+                        # Use the actual product name from the request
+                        name_lower = name.lower()
+                        debug_logger.info(f"Using provided product name: {name[:50]}...")
+                        
+                        if 'macbook' in name_lower or ('laptop' in name_lower and 'cable' not in name_lower):
+                            search_term_for_matching = "laptop macbook notebook"
+                        elif 'desktop' in name_lower or 'pc' in name_lower:
+                            search_term_for_matching = "desktop computer pc"
+                        elif 'monitor' in name_lower or 'display' in name_lower:
+                            search_term_for_matching = "monitor display screen"
+                        elif 'tablet' in name_lower or 'ipad' in name_lower:
+                            search_term_for_matching = "tablet ipad"
+                        elif 'phone' in name_lower or 'iphone' in name_lower:
+                            search_term_for_matching = "phone smartphone iphone"
+                        else:
+                            # Use the actual name - don't force it into laptop category!
+                            search_term_for_matching = " ".join(name.split()[:4])
+                    
+                    # PRIORITY 4: Use partNumber if provided
+                    elif partNumber:
+                        search_term_for_matching = partNumber
+                    
+                    # FALLBACK: Only use generic laptop if we have absolutely nothing
                     else:
-                        search_term_for_matching = "laptop computer notebook"
+                        debug_logger.warning("No product context available, using minimal search")
+                        search_term_for_matching = "general computer product"
                     
                     debug_logger.info(f"Using search term for consumer matching: '{search_term_for_matching}'")
                     consumer_results = get_consumer_focused_results(search_term_for_matching, asin)
