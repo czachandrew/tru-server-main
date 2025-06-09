@@ -888,11 +888,11 @@ class Query(graphene.ObjectType):
                     # The Chrome extension provides name, partNumber, etc. - USE THOSE!
                     elif name:
                         # Use smart extraction to get clean search terms
-                        from products.consumer_matching import smart_extract_search_terms
+                        from products.consumer_matching import smart_extract_search_terms_dynamic
                         
-                        debug_logger.info(f"Using smart extraction for: {name[:50]}...")
-                        extracted_data = smart_extract_search_terms(name)
-                        debug_logger.info(f"Extracted product type: {extracted_data.get('type')}, clean terms: {extracted_data.get('clean_terms')}")
+                        debug_logger.info(f"Using dynamic smart extraction for: {name[:50]}...")
+                        extracted_data = smart_extract_search_terms_dynamic(name)
+                        debug_logger.info(f"Extracted product type: {extracted_data.get('type')}, clean terms: {extracted_data.get('clean_terms')}, method: {extracted_data.get('method')}")
                         
                         # Use the extracted clean terms for search
                         if extracted_data['type'] == 'cable':
@@ -917,7 +917,7 @@ class Query(graphene.ObjectType):
                             search_term_for_matching = " ".join(extracted_data['clean_terms'][:3])
                             debug_logger.info(f"Unknown type, using clean terms: {search_term_for_matching}")
                         
-                        debug_logger.info(f"Final search term after smart extraction: '{search_term_for_matching}'")
+                        debug_logger.info(f"Final search term after dynamic extraction: '{search_term_for_matching}'")
                     
                     # PRIORITY 4: Use partNumber if provided
                     elif partNumber:

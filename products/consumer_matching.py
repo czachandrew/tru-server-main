@@ -21,6 +21,12 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 from products.models import Product
 from django.db.models import Q
+from collections import Counter
+from functools import lru_cache
+import pickle
+import os
+from django.conf import settings
+from django.core.cache import cache
 
 @dataclass
 class ConsumerMatchResult:
@@ -248,25 +254,32 @@ class ConsumerProductMatcher:
         for product in demo_products:
             all_results.append((product, 'demo_product', 10))  # High score for demo products
         
-        # Strategy 2: Consumer-relevant description mining
+        # Strategy 2: IMPROVED Cable-specific search
+        if any(cable_term in search_term.lower() for cable_term in ['hdmi cable', 'usb cable', 'cable', 'cord']):
+            cable_products = self._precise_cable_search(search_term)
+            for product in cable_products:
+                if product not in [r[0] for r in all_results]:
+                    all_results.append((product, 'precise_cable', 9))  # High score for precise cable matches
+        
+        # Strategy 3: Consumer-relevant description mining
         consumer_products = self._consumer_description_mining(search_term)
         for product in consumer_products:
             if product not in [r[0] for r in all_results]:
                 all_results.append((product, 'consumer_description', 8))
         
-        # Strategy 3: Exact part number matches
+        # Strategy 4: Exact part number matches
         part_matches = self._exact_part_search(search_term)
         for product in part_matches:
             if product not in [r[0] for r in all_results]:
                 all_results.append((product, 'exact_part', 9))
         
-        # Strategy 4: Weighted description search
+        # Strategy 5: Weighted description search
         desc_matches = self._weighted_description_search(search_term)
         for product in desc_matches:
             if product not in [r[0] for r in all_results]:
                 all_results.append((product, 'weighted_description', 7))
         
-        # Strategy 5: Fuzzy name search
+        # Strategy 6: Fuzzy name search
         name_matches = self._fuzzy_name_search(search_term)
         for product in name_matches:
             if product not in [r[0] for r in all_results]:
@@ -276,15 +289,20 @@ class ConsumerProductMatcher:
         all_results.sort(key=lambda x: x[2], reverse=True)
         results = [result[0] for result in all_results]
         
-        # Exclude accessories from main search results 
-        filtered_results = []
-        for product in results:
-            if not self._is_accessory_product(product):
-                filtered_results.append(product)
-            if len(filtered_results) >= 15:
-                break
+        # Apply better filtering for accessory searches
+        if any(accessory_term in search_term.lower() for accessory_term in ['cable', 'cord', 'adapter']):
+            # For accessory searches, be more strict about what we include
+            filtered_results = self._filter_accessory_results(results, search_term)
+        else:
+            # For device searches, exclude accessories from main search results 
+            filtered_results = []
+            for product in results:
+                if not self._is_accessory_product(product):
+                    filtered_results.append(product)
+                if len(filtered_results) >= 15:
+                    break
         
-        print(f"🔍 ENHANCED SEARCH: Found {len(filtered_results)} non-accessory products")
+        print(f"🔍 ENHANCED SEARCH: Found {len(filtered_results)} filtered products")
         for i, product in enumerate(filtered_results[:5]):
             print(f"  {i+1}. {product.name} (Demo: {product.is_demo}) (Part: {product.part_number})")
         
@@ -531,6 +549,106 @@ class ConsumerProductMatcher:
         return any(keyword in product_name or keyword in product_desc 
                   for keyword in accessory_keywords)
 
+    def _precise_cable_search(self, search_term: str) -> List[Product]:
+        """Precise search specifically for cables, excluding adapters and devices"""
+        search_lower = search_term.lower()
+        
+        print(f"🔌 PRECISE CABLE SEARCH: Looking for cables with term: '{search_term}'")
+        
+        # Define what we're looking for
+        cable_indicators = []
+        if 'hdmi' in search_lower:
+            cable_indicators = ['hdmi']
+        elif 'usb' in search_lower:
+            cable_indicators = ['usb']
+        elif 'ethernet' in search_lower:
+            cable_indicators = ['ethernet', 'cat5', 'cat6']
+        elif 'power' in search_lower:
+            cable_indicators = ['power cord', 'power cable']
+        
+        if not cable_indicators:
+            return []
+        
+        # Build query for actual cables
+        query = Q()
+        for indicator in cable_indicators:
+            # Include products that clearly indicate they are cables
+            cable_terms = Q(name__icontains=f'{indicator} cable') | Q(name__icontains=f'{indicator} cord')
+            
+            # ENHANCED: Search part numbers for multiple cable patterns
+            part_terms = (
+                Q(part_number__icontains=f'{indicator}-cable') | 
+                Q(part_number__icontains=f'{indicator}cable') |
+                Q(part_number__icontains=f'{indicator}2-cable') |  # Pattern like HDMI2-CABLE
+                Q(part_number__icontains=f'{indicator}_cable')
+            )
+            
+            query |= (cable_terms | part_terms)
+        
+        # EXCLUDE products that are clearly NOT cables
+        exclusion_terms = [
+            'monitor', 'display', 'tv', 'television', 'screen',  # Devices with HDMI ports
+            'adapter', 'converter', 'splitter', 'switch',       # Adapters/converters  
+            'extender', 'repeater', 'booster',                  # Signal devices
+            'mount', 'bracket', 'stand'                         # Mounting hardware
+        ]
+        
+        exclude_query = Q()
+        for term in exclusion_terms:
+            exclude_query |= Q(name__icontains=term)
+        
+        # Find products
+        cable_products = Product.objects.filter(query).exclude(exclude_query)[:10]
+        
+        print(f"🔌 PRECISE CABLE SEARCH: Found {cable_products.count()} potential cable products")
+        for product in cable_products:
+            print(f"  - {product.name} (Part: {product.part_number})")
+        
+        return list(cable_products)
+    
+    def _filter_accessory_results(self, products: List[Product], search_term: str) -> List[Product]:
+        """Filter accessory search results to be more relevant"""
+        search_lower = search_term.lower()
+        filtered = []
+        
+        for product in products:
+            product_name = product.name.lower()
+            
+            # For HDMI searches, prioritize actual cables
+            if 'hdmi' in search_lower:
+                # INCLUDE: Products that are clearly HDMI cables
+                if ('hdmi' in product_name and 
+                    any(cable_term in product_name for cable_term in ['cable', 'cord']) and
+                    not any(exclude_term in product_name for exclude_term in ['adapter', 'converter', 'dvi', 'vga', 'monitor', 'tv'])):
+                    filtered.append(product)
+                    continue
+                
+                # INCLUDE: HDMI products with cable in part number
+                if 'hdmi' in product.part_number.lower() and 'cable' in product.part_number.lower():
+                    filtered.append(product)
+                    continue
+            
+            # For USB searches, prioritize USB cables (not adapters)
+            elif 'usb' in search_lower:
+                if ('usb' in product_name and 
+                    any(cable_term in product_name for cable_term in ['cable', 'cord']) and
+                    not any(exclude_term in product_name for exclude_term in ['adapter', 'hub', 'charger'])):
+                    filtered.append(product)
+                    continue
+            
+            # For general cable searches, include cable-like products
+            elif 'cable' in search_lower:
+                if any(cable_term in product_name for cable_term in ['cable', 'cord']):
+                    filtered.append(product)
+                    continue
+            
+            # Stop when we have enough relevant results
+            if len(filtered) >= 10:
+                break
+        
+        print(f"🔍 ACCESSORY FILTER: Filtered to {len(filtered)} relevant products")
+        return filtered
+
 # Updated integration function
 def get_consumer_focused_results(search_term: str, asin: str = None) -> Dict:
     """
@@ -766,10 +884,229 @@ def _classify_product_relationship(product: Product, search_context: str) -> Dic
         'revenue_type': 'product_sale'
     } 
 
+class DynamicProductIntelligence:
+    """
+    Self-updating product intelligence system that learns from your database
+    """
+    
+    def __init__(self):
+        self.cache_timeout = 3600 * 24  # 24 hours
+        
+    @lru_cache(maxsize=1)
+    def get_learned_categories(self):
+        """Learn product categories from actual database content"""
+        cache_key = "learned_categories_v1"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+            
+        print("🧠 Learning product categories from database...")
+        
+        # Analyze all product names and descriptions
+        from products.models import Product
+        all_products = Product.objects.all()
+        
+        categories = {
+            'laptop_indicators': Counter(),
+            'cable_indicators': Counter(),
+            'monitor_indicators': Counter(),
+            'adapter_indicators': Counter(),
+            'brand_indicators': Counter(),
+            'marketing_noise': Counter()
+        }
+        
+        for product in all_products:
+            text = (product.name + " " + (product.description or "")).lower()
+            words = text.split()
+            
+            # Learn laptop indicators
+            if any(term in text for term in ['macbook', 'thinkpad', 'laptop', 'notebook']):
+                for word in words:
+                    if len(word) > 3:
+                        categories['laptop_indicators'][word] += 1
+            
+            # Learn cable indicators  
+            if any(term in text for term in ['cable', 'cord', 'hdmi', 'usb']):
+                for word in words:
+                    if len(word) > 3:
+                        categories['cable_indicators'][word] += 1
+            
+            # Learn monitor indicators
+            if any(term in text for term in ['monitor', 'display', 'screen', 'lcd']):
+                for word in words:
+                    if len(word) > 3:
+                        categories['monitor_indicators'][word] += 1
+                        
+            # Learn adapter indicators
+            if any(term in text for term in ['adapter', 'converter', 'dongle', 'hub']):
+                for word in words:
+                    if len(word) > 3:
+                        categories['adapter_indicators'][word] += 1
+            
+            # Detect potential brands (capitalized words that appear frequently)
+            import re
+            brands = re.findall(r'\b[A-Z][a-z]+\b', product.name)
+            for brand in brands:
+                categories['brand_indicators'][brand.lower()] += 1
+        
+        # Filter to most significant indicators
+        learned = {}
+        for category, counter in categories.items():
+            # Keep terms that appear in at least 3 products but not too common (spam filter)
+            filtered = {word: count for word, count in counter.items() 
+                       if 3 <= count <= len(all_products) * 0.1 and len(word) > 2}
+            learned[category] = list(filtered.keys())
+            
+        print(f"✅ Learned {len(learned['laptop_indicators'])} laptop indicators")
+        print(f"✅ Learned {len(learned['cable_indicators'])} cable indicators") 
+        print(f"✅ Learned {len(learned['brand_indicators'])} brand indicators")
+        
+        cache.set(cache_key, learned, self.cache_timeout)
+        return learned
+    
+    def detect_marketing_noise(self, min_threshold=10):
+        """Automatically detect marketing fluff words"""
+        cache_key = f"marketing_noise_v1_{min_threshold}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+            
+        print("🔍 Analyzing marketing noise patterns...")
+        
+        from products.models import Product
+        all_text = ""
+        for product in Product.objects.all():
+            all_text += (product.name + " " + (product.description or "")).lower()
+        
+        # Common patterns in marketing text
+        marketing_patterns = [
+            r'\b(certified|premium|ultra|high|advanced|enhanced|improved)\b',
+            r'\b(professional|quality|durable|reliable|perfect|ideal)\b',
+            r'\b(best|top|leading|superior|excellent|outstanding)\b',
+            r'\b(new|latest|modern|innovative|cutting[-\s]edge)\b'
+        ]
+        
+        import re
+        detected_noise = set()
+        for pattern in marketing_patterns:
+            matches = re.findall(pattern, all_text)
+            detected_noise.update(matches)
+        
+        # Filter by frequency (must appear at least min_threshold times)
+        word_counts = Counter(all_text.split())
+        frequent_noise = [word for word in detected_noise 
+                         if word_counts[word] >= min_threshold]
+        
+        print(f"✅ Detected {len(frequent_noise)} marketing noise terms")
+        cache.set(cache_key, frequent_noise, self.cache_timeout)
+        return frequent_noise
+    
+    def get_category_confidence(self, text, category_type):
+        """Calculate confidence that text belongs to a category"""
+        learned = self.get_learned_categories()
+        indicators = learned.get(f'{category_type}_indicators', [])
+        
+        text_lower = text.lower()
+        matches = sum(1 for indicator in indicators if indicator in text_lower)
+        confidence = matches / len(indicators) if indicators else 0
+        
+        return min(confidence * 2, 1.0)  # Cap at 1.0
+    
+    def suggest_new_categories(self):
+        """Analyze database to suggest new product categories to add"""
+        from products.models import Product
+        
+        # Find common word patterns that don't fit existing categories
+        all_products = Product.objects.all()
+        word_frequency = Counter()
+        
+        existing_categories = ['laptop', 'cable', 'monitor', 'adapter', 'power', 'storage']
+        
+        for product in all_products:
+            # Skip products that clearly fit existing categories
+            text = product.name.lower()
+            if any(cat in text for cat in existing_categories):
+                continue
+                
+            words = text.split()
+            for word in words:
+                if len(word) > 4:  # Focus on substantial words
+                    word_frequency[word] += 1
+        
+        # Find clusters of products with similar uncommon words
+        potential_categories = {}
+        for word, count in word_frequency.most_common(50):
+            if count >= 5:  # At least 5 products
+                similar_products = Product.objects.filter(name__icontains=word)
+                if similar_products.count() >= 5:
+                    potential_categories[word] = {
+                        'count': count,
+                        'examples': [p.name for p in similar_products[:3]]
+                    }
+        
+        return potential_categories
+
+# Global instance
+dynamic_intelligence = DynamicProductIntelligence()
+
+def smart_extract_search_terms_dynamic(product_name: str) -> Dict[str, any]:
+    """
+    Enhanced version using dynamic learning from your database
+    """
+    try:
+        name_lower = product_name.lower()
+        
+        # Get learned categories
+        learned = dynamic_intelligence.get_learned_categories()
+        
+        # Calculate confidence for each category type
+        confidences = {
+            'laptop': dynamic_intelligence.get_category_confidence(name_lower, 'laptop'),
+            'cable': dynamic_intelligence.get_category_confidence(name_lower, 'cable'), 
+            'monitor': dynamic_intelligence.get_category_confidence(name_lower, 'monitor'),
+            'adapter': dynamic_intelligence.get_category_confidence(name_lower, 'adapter')
+        }
+        
+        # Get the most confident category
+        best_category = max(confidences, key=confidences.get)
+        best_confidence = confidences[best_category]
+        
+        print(f"🎯 Category confidences: {confidences}")
+        print(f"🏆 Best match: {best_category} ({best_confidence:.2f})")
+        
+        # If confidence is too low, fall back to static rules
+        if best_confidence < 0.3:
+            print("⚠️ Low confidence, using static extraction")
+            return smart_extract_search_terms(product_name)  # Fallback to original
+        
+        # Use learned indicators to build search terms
+        category_indicators = learned.get(f'{best_category}_indicators', [])
+        
+        # Extract relevant terms from the product name
+        relevant_terms = []
+        for indicator in category_indicators[:10]:  # Top 10 indicators
+            if indicator in name_lower:
+                relevant_terms.append(indicator)
+        
+        # Remove marketing noise
+        noise_terms = dynamic_intelligence.detect_marketing_noise()
+        clean_terms = [term for term in relevant_terms if term not in noise_terms]
+        
+        return {
+            'type': best_category,
+            'confidence': best_confidence,
+            'clean_terms': clean_terms[:5],  # Top 5 clean terms
+            'learned_from': f"{len(category_indicators)} database examples",
+            'method': 'dynamic_learning'
+        }
+        
+    except Exception as e:
+        print(f"⚠️ Dynamic extraction failed: {e}, falling back to static")
+        return smart_extract_search_terms(product_name)
+
 def smart_extract_search_terms(product_name: str) -> Dict[str, any]:
     """
-    Intelligently extract clean search terms from verbose Amazon product names
-    Returns structured data about the product type and relevant search terms
+    Original static version - kept as fallback
     """
     name_lower = product_name.lower()
     
@@ -805,7 +1142,8 @@ def smart_extract_search_terms(product_name: str) -> Dict[str, any]:
             'subtype': 'hdmi',
             'version': version.group(1) if version else None,
             'clean_terms': ['hdmi', 'cable'],
-            'technical_specs': extract_cable_specs(name_lower)
+            'technical_specs': extract_cable_specs(name_lower),
+            'method': 'static_rules'
         }
     
     # USB cables/adapters
@@ -817,7 +1155,8 @@ def smart_extract_search_terms(product_name: str) -> Dict[str, any]:
             'subtype': 'usb',
             'version': usb_version.group(1) if usb_version else None,
             'clean_terms': ['usb', detected_type],
-            'technical_specs': extract_cable_specs(name_lower)
+            'technical_specs': extract_cable_specs(name_lower),
+            'method': 'static_rules'
         }
     
     # MacBooks (special handling)
@@ -830,32 +1169,8 @@ def smart_extract_search_terms(product_name: str) -> Dict[str, any]:
             'model': model,
             'size': size.group(1) if size else None,
             'clean_terms': ['macbook', model, 'laptop'] if model else ['macbook', 'laptop'],
-            'technical_specs': extract_laptop_specs(name_lower)
-        }
-    
-    # Laptops (general)
-    elif detected_type == 'laptop':
-        brand = extract_brand(name_lower, ['dell', 'hp', 'lenovo', 'asus', 'acer', 'msi', 'alienware'])
-        size = re.search(r'(\d+)[-\s]*inch', name_lower)
-        return {
-            'type': 'laptop',
-            'subtype': brand if brand else 'generic',
-            'size': size.group(1) if size else None,
-            'clean_terms': [term for term in ['laptop', 'notebook', brand] if term],
-            'technical_specs': extract_laptop_specs(name_lower)
-        }
-    
-    # Monitors
-    elif detected_type == 'monitor':
-        size = re.search(r'(\d+)[-\s]*inch', name_lower)
-        resolution = extract_resolution(name_lower)
-        return {
-            'type': 'monitor',
-            'subtype': 'display',
-            'size': size.group(1) if size else None,
-            'resolution': resolution,
-            'clean_terms': ['monitor', 'display', 'screen'],
-            'technical_specs': {'size': size.group(1) if size else None, 'resolution': resolution}
+            'technical_specs': extract_laptop_specs(name_lower),
+            'method': 'static_rules'
         }
     
     # Fallback: extract key terms and clean them
@@ -866,7 +1181,8 @@ def smart_extract_search_terms(product_name: str) -> Dict[str, any]:
             'subtype': None,
             'clean_terms': clean_terms,
             'technical_specs': {},
-            'original_name': product_name[:50] + '...' if len(product_name) > 50 else product_name
+            'original_name': product_name[:50] + '...' if len(product_name) > 50 else product_name,
+            'method': 'static_fallback'
         }
 
 def extract_cable_specs(name_lower: str) -> Dict[str, str]:
@@ -909,23 +1225,6 @@ def extract_laptop_specs(name_lower: str) -> Dict[str, str]:
         specs['processor'] = 'amd'
     
     return specs
-
-def extract_resolution(name_lower: str) -> Optional[str]:
-    """Extract display resolution"""
-    if '4k' in name_lower or '3840' in name_lower:
-        return '4k'
-    elif '1440p' in name_lower or '2560' in name_lower:
-        return '1440p'
-    elif '1080p' in name_lower or '1920' in name_lower:
-        return '1080p'
-    return None
-
-def extract_brand(name_lower: str, brand_list: List[str]) -> Optional[str]:
-    """Extract brand name from product name"""
-    for brand in brand_list:
-        if brand in name_lower:
-            return brand
-    return None
 
 def extract_clean_terms(product_name: str) -> List[str]:
     """Extract clean, relevant terms from any product name"""
