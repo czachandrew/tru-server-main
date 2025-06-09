@@ -291,27 +291,71 @@ class ConsumerProductMatcher:
         return filtered_results
     
     def _demo_product_search(self, search_term: str) -> List[Product]:
-        """Search demo products that match the search term"""
+        """Search demo products that are contextually relevant to the search term"""
         if not search_term:
             return []
         
         print(f"🔍 DEMO SEARCH: Searching for demo products with term: '{search_term}'")
         
-        keywords = search_term.lower().split()
-        query = Q(is_demo=True)  # Only demo products
+        search_lower = search_term.lower()
         
-        # Build query for demo products
-        name_query = Q()
-        for keyword in keywords:
-            if len(keyword) > 2:
-                name_query |= Q(name__icontains=keyword)
-                name_query |= Q(description__icontains=keyword)
-                name_query |= Q(part_number__icontains=keyword)
+        # CONTEXTUAL RELEVANCE: Only return demo products if the search is actually for similar products
+        # Define strict product category contexts
+        laptop_contexts = [
+            'macbook', 'laptop', 'notebook', 'ultrabook', 'thinkpad', 'dell latitude', 
+            'hp elitebook', 'lenovo', 'business laptop', 'portable computer'
+        ]
         
-        query &= name_query
+        desktop_contexts = [
+            'desktop', 'workstation', 'pc', 'computer tower', 'all-in-one'
+        ]
+        
+        # Exclude accessory searches - these should NOT get laptop alternatives
+        accessory_exclusions = [
+            'cable', 'cord', 'power', 'adapter', 'charger', 'mount', 'bracket',
+            'stand', 'case', 'cover', 'connector', 'extension', 'hub', 'splitter',
+            'hdmi', 'usb', 'ethernet', 'vga', 'dvi', 'audio', 'speaker', 'mouse', 'keyboard'
+        ]
+        
+        # Check if this is an accessory search - if so, return no demo products
+        for exclusion in accessory_exclusions:
+            if exclusion in search_lower:
+                print(f"🔍 DEMO SEARCH: Skipping demo products - detected accessory search: '{exclusion}'")
+                return []
+        
+        # Determine if this is a laptop-related search
+        is_laptop_context = any(context in search_lower for context in laptop_contexts)
+        is_desktop_context = any(context in search_lower for context in desktop_contexts)
+        
+        if not (is_laptop_context or is_desktop_context):
+            print(f"🔍 DEMO SEARCH: No relevant product context found - skipping demo products")
+            return []
+        
+        # Build contextual query for demo products
+        query = Q(is_demo=True)
+        
+        if is_laptop_context:
+            # Only return laptop demo products for laptop searches
+            laptop_query = Q()
+            laptop_terms = ['macbook', 'laptop', 'notebook', 'ultrabook', 'elitebook', 'latitude']
+            for term in laptop_terms:
+                laptop_query |= Q(name__icontains=term)
+                laptop_query |= Q(description__icontains=term)
+            query &= laptop_query
+            print(f"🔍 DEMO SEARCH: Looking for laptop demo products")
+            
+        elif is_desktop_context:
+            # Only return desktop demo products for desktop searches
+            desktop_query = Q()
+            desktop_terms = ['desktop', 'workstation', 'pc', 'tower']
+            for term in desktop_terms:
+                desktop_query |= Q(name__icontains=term)
+                desktop_query |= Q(description__icontains=term)
+            query &= desktop_query
+            print(f"🔍 DEMO SEARCH: Looking for desktop demo products")
         
         demo_products = list(Product.objects.filter(query)[:5])
-        print(f"🔍 DEMO SEARCH: Found {len(demo_products)} demo products")
+        print(f"🔍 DEMO SEARCH: Found {len(demo_products)} contextually relevant demo products")
         for product in demo_products:
             print(f"  - {product.name} (Part: {product.part_number})")
         

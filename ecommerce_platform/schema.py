@@ -640,21 +640,23 @@ class Query(graphene.ObjectType):
             
             # IMPROVED: Smart search term detection for better matching
             search_term_for_matching = term
-            if 'macbook' in term.lower() or 'laptop' in term.lower():
+            
+            # CONSERVATIVE MAPPING: Only expand search terms for actual product categories
+            if any(keyword in term.lower() for keyword in ['macbook pro', 'macbook air', '13-inch macbook', '15-inch macbook']):
                 search_term_for_matching = "laptop macbook notebook"
-            elif 'desktop' in term.lower() or 'pc' in term.lower():
-                search_term_for_matching = "desktop computer pc"
-            elif 'monitor' in term.lower() or 'display' in term.lower():
-                search_term_for_matching = "monitor display screen"
-            elif 'mw2u3ll' in term.lower() or 'mba' in term.lower() or 'mbp' in term.lower():
-                # Apple part numbers - search for MacBooks
-                search_term_for_matching = "laptop macbook notebook"
-            elif len(term) >= 8 and re.match(r'^[A-Z0-9\-_]+$', term.upper()):
-                # Generic part number pattern - default to laptop search for common requests
+            elif any(keyword in term.lower() for keyword in ['laptop', 'notebook', 'ultrabook', 'business laptop']):
                 search_term_for_matching = "laptop computer notebook"
+            elif any(keyword in term.lower() for keyword in ['desktop pc', 'workstation', 'all-in-one']):
+                search_term_for_matching = "desktop computer pc"
+            elif any(keyword in term.lower() for keyword in ['monitor', 'display', 'screen']):
+                search_term_for_matching = "monitor display screen"
+            elif ('mw2u3ll' in term.lower() or 'mba' in term.lower() or 'mbp' in term.lower()) and not any(cable_term in term.lower() for cable_term in ['cable', 'cord', 'adapter', 'charger']):
+                # Apple part numbers - only if not cable/accessory related
+                search_term_for_matching = "laptop macbook notebook"
             else:
-                # Use the term as-is but also try laptop as fallback
-                search_term_for_matching = f"{term} laptop computer"
+                # DON'T expand search terms for accessories or unknown items
+                # This prevents HDMI cables from getting MacBook alternatives
+                search_term_for_matching = term
             
             debug_logger.info(f"🔍 Using consumer matching with term: '{search_term_for_matching}'")
             consumer_results = get_consumer_focused_results(search_term_for_matching, original_asin)
