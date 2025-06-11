@@ -5,6 +5,10 @@ from vendors.models import Vendor
 from offers.models import Offer
 import os
 from decimal import Decimal
+import logging
+from django.utils import timezone
+
+debug_logger = logging.getLogger('debug')
 
 def process_batch(batch_data):
     """Process a batch of product data"""
@@ -194,3 +198,93 @@ def check_tasks_and_send_email(task_ids):
         return "Email notification sent successfully"
     except Exception as e:
         return f"Error sending email notification: {str(e)}"
+
+def create_future_product_record(task_data):
+    """
+    Create a product record for future monetization opportunities
+    
+    This task is queued when users visit non-Amazon product pages through the extension.
+    It helps us track demand and identify opportunities for:
+    1. Creating Amazon affiliate links
+    2. Sourcing similar products from suppliers  
+    3. Building a demand database for inventory decisions
+    """
+    debug_logger.info(f"🌱 FUTURE PRODUCT CREATION: Starting task with data: {task_data}")
+    
+    try:
+        part_number = task_data.get('part_number')
+        name = task_data.get('name')
+        source = task_data.get('source', 'unknown')
+        
+        if not name and not part_number:
+            debug_logger.error("❌ No name or part number provided")
+            return "Error: No product identifiers provided"
+        
+        # Check if we already have this product
+        existing_product = None
+        if part_number:
+            existing_product = Product.objects.filter(part_number__iexact=part_number).first()
+        
+        if existing_product:
+            debug_logger.info(f"✅ Product already exists: {existing_product.name}")
+            # Update metadata to track this as a future opportunity
+            if not hasattr(existing_product, 'future_demand_count'):
+                existing_product.future_demand_count = 0
+            existing_product.future_demand_count += 1
+            existing_product.last_demand_date = timezone.now()
+            existing_product.save()
+            return f"Updated demand tracking for existing product: {existing_product.name}"
+        
+        # Create new future product record
+        try:
+            # Extract manufacturer if possible
+            manufacturer_name = "Unknown"
+            if name:
+                name_parts = name.split()
+                potential_manufacturers = ['Microsoft', 'Apple', 'Dell', 'HP', 'Lenovo', 'ASUS', 'Acer', 'Samsung', 'LG', 'Sony']
+                for mfr in potential_manufacturers:
+                    if mfr.lower() in name.lower():
+                        manufacturer_name = mfr
+                        break
+            
+            # Get or create manufacturer
+            manufacturer, _ = Manufacturer.objects.get_or_create(
+                name=manufacturer_name,
+                defaults={'slug': manufacturer_name.lower().replace(' ', '-')}
+            )
+            
+            # Create the future product record
+            product = Product.objects.create(
+                name=name[:255] if name else f"Future Product {part_number}",
+                part_number=part_number or f"FUTURE_{timezone.now().strftime('%Y%m%d_%H%M%S')}",
+                manufacturer=manufacturer,
+                description=f"Future product opportunity from {source}. Original name: {name}",
+                slug=f"future-{part_number or timezone.now().strftime('%Y%m%d_%H%M%S')}".lower(),
+                status='future_opportunity',  # Special status for future products
+                source='future_demand',
+                future_demand_count=1,
+                last_demand_date=timezone.now(),
+                specifications={
+                    'original_source': source,
+                    'discovery_date': timezone.now().isoformat(),
+                    'original_name': name,
+                    'original_part_number': part_number
+                }
+            )
+            
+            debug_logger.info(f"✅ Created future product record: {product.name} (ID: {product.id})")
+            
+            # FUTURE ENHANCEMENT: Queue additional tasks
+            # 1. Search Amazon for similar products
+            # 2. Check if we can source from suppliers
+            # 3. Analyze demand patterns
+            
+            return f"Created future product record: {product.name}"
+            
+        except Exception as e:
+            debug_logger.error(f"❌ Error creating future product: {e}")
+            return f"Error creating future product: {str(e)}"
+            
+    except Exception as e:
+        debug_logger.error(f"❌ Future product task error: {e}")
+        return f"Task error: {str(e)}"

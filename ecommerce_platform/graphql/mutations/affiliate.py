@@ -22,7 +22,7 @@ class ProductInput(graphene.InputObjectType):
     manufacturer = graphene.String()
     description = graphene.String()
     mainImage = graphene.String()
-    price = graphene.String()
+    price = graphene.Float()
     sourceUrl = graphene.String()
     technicalDetails = graphene.JSONString()
 

@@ -6,7 +6,8 @@ PRODUCT_STATUS_CHOICES = [
     ('active', 'Active'),
     ('inactive', 'Inactive'),
     ('discontinued', 'Discontinued'),
-    ('pending', 'Pending')
+    ('pending', 'Pending'),
+    ('future_opportunity', 'Future Opportunity')
 ]
 
 PRODUCT_SOURCE_CHOICES = [
@@ -14,7 +15,8 @@ PRODUCT_SOURCE_CHOICES = [
     ('web_scrape', 'Web Scrape'),
     ('partner_import', 'Partner Import'),
     ('manual', 'Manual Entry'),
-    ('user_contributed', 'User Contributed')
+    ('user_contributed', 'User Contributed'),
+    ('future_demand', 'Future Demand Tracking')
 ]
 
 class Manufacturer(models.Model):
@@ -83,6 +85,10 @@ class Product(models.Model):
     # Add this new field
     is_featured = models.BooleanField(default=False)
     is_demo = models.BooleanField(default=False, help_text="Mark this product as demo data for testing/presentations")
+    
+    # NEW: Future demand tracking for universal search
+    future_demand_count = models.IntegerField(default=0, help_text="Number of times this product was searched for")
+    last_demand_date = models.DateTimeField(null=True, blank=True, help_text="Last time someone searched for this product")
 
     class Meta:
         # Comment out the indexes temporarily

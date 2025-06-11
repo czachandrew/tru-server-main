@@ -1,5 +1,6 @@
 import graphene
 from graphene_django import DjangoObjectType
+from graphene import relay
 from products.models import Product as ProductModel, Category as CategoryModel, Manufacturer as ManufacturerModel
 
 class Product(DjangoObjectType):
@@ -21,6 +22,13 @@ class ProductType(DjangoObjectType):
         model = ProductModel
         fields = "__all__"
         name = "Product"
+        interfaces = (relay.Node, )  # This enables the connection
+        filter_fields = {
+            'name': ['exact', 'icontains', 'istartswith'],
+            'part_number': ['exact', 'icontains'],
+            # add other fields as needed
+        }
+        connection_class = relay.Connection
     
     # GraphQL expects camelCase but Django uses snake_case
     mainImage = graphene.String(source='main_image')

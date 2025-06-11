@@ -2,7 +2,7 @@ import graphene
 # Make sure to import all your types here
 from .user import UserType, UserProfileType
 # Import your ProductType - adjust the path as needed
-from .product import ProductType
+from .product import ProductType, CategoryType, ManufacturerType
 # Import any other types you need
 from .scalar import JSONScalar
 from .offer import OfferType, VendorType

@@ -19,7 +19,7 @@ from django.urls import path
 from django.views.decorators.csrf import csrf_exempt
 from ecommerce_platform.graphql.views import DebugGraphQLView
 from ecommerce_platform.views import test_auth, debug_token, test_simple_task, check_task_status
-from affiliates.views import affiliate_callback, standalone_callback, check_affiliate_task_status
+from affiliates.views import affiliate_callback, standalone_callback, check_affiliate_task_status, search_callback
 from products.views import toggle_demo_mode, demo_status
 from graphene_django.views import GraphQLView
 import json
@@ -122,6 +122,7 @@ urlpatterns = [
     path('debug-token/', debug_token, name='debug-token'),
     path('api/affiliate/callback/<str:task_id>/', affiliate_callback, name='affiliate_callback'),
     path('api/affiliate/standalone/<str:task_id>/', standalone_callback, name='standalone_callback'),
+    path('api/affiliate-search-callback/', search_callback, name='search_callback'),
     path('api/affiliate/status/', check_affiliate_task_status, name='check_affiliate_status'),
     path('test-task/', test_simple_task, name='test-task'),
     path('check-task/<str:task_id>/', check_task_status, name='check-task'),

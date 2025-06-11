@@ -266,21 +266,69 @@ def get_redis_kwargs():
     return redis_kwargs
 
 def generate_standalone_amazon_affiliate_url(asin):
-    """Generate an Amazon affiliate URL without an existing product"""
+    """
+    Generate an Amazon affiliate URL without an existing product
+    
+    SAFETY CHECKS ADDED:
+    - Check if affiliate link already exists with complete URL
+    - Check if processing is already in progress
+    - Update processing state properly
+    """
+    logger.info(f"🔍 SAFETY CHECK: Starting affiliate URL generation for ASIN: {asin}")
+    
     try:
-        # Generate a unique task ID
+        # STEP 1: Check if affiliate link already exists and is complete
+        existing_link = AffiliateLink.objects.filter(
+            platform='amazon',
+            platform_id=asin
+        ).first()
+        
+        if existing_link:
+            # Check if link is already complete
+            if existing_link.affiliate_url and existing_link.affiliate_url.strip() and not existing_link.affiliate_url.startswith('ERROR:'):
+                logger.info(f"✅ DUPLICATE PREVENTED: ASIN {asin} already has complete affiliate URL")
+                return None, False  # Don't create duplicate task
+            
+            # Check if processing is already in progress
+            if hasattr(existing_link, 'is_processing') and existing_link.is_processing:
+                from django.utils import timezone
+                from datetime import timedelta
+                
+                if existing_link.processing_started_at:
+                    time_since_start = timezone.now() - existing_link.processing_started_at
+                    if time_since_start < timedelta(minutes=10):  # Still processing
+                        logger.info(f"⏳ DUPLICATE PREVENTED: ASIN {asin} already processing for {time_since_start}")
+                        return None, False  # Don't create duplicate task
+                    else:
+                        logger.warning(f"⏰ RESETTING: Processing stuck for {time_since_start}, proceeding with new task")
+                        existing_link.is_processing = False
+                        existing_link.processing_started_at = None
+                        existing_link.save(update_fields=['is_processing', 'processing_started_at'])
+                else:
+                    logger.warning(f"🔧 FIXING: is_processing=True but no start time, resetting...")
+                    existing_link.is_processing = False
+                    existing_link.save(update_fields=['is_processing'])
+        
+        # STEP 2: Generate task and update processing state
         task_id = str(uuid.uuid4())
-        logger.info(f"Generating standalone affiliate URL for ASIN: {asin} with task_id: {task_id}")
+        logger.info(f"🚀 PROCEEDING: Generating affiliate URL for ASIN: {asin} with task_id: {task_id}")
         
         redis_kwargs = get_redis_connection()
         r = redis.Redis(**redis_kwargs)
         r.set(f"pending_standalone_task:{task_id}", asin, ex=86400)
         
-        # Determine base URL for callback - use settings or fallback
+        # STEP 3: Update processing state if link exists
+        if existing_link:
+            from django.utils import timezone
+            existing_link.is_processing = True
+            existing_link.processing_started_at = timezone.now()
+            existing_link.save(update_fields=['is_processing', 'processing_started_at'])
+            logger.info(f"🔄 UPDATED: Set processing state for existing link {existing_link.id}")
+        
+        # STEP 4: Create and publish task
         base_url = getattr(settings, 'BASE_URL', 'http://localhost:8000')
         callback_url = f"{base_url}/api/affiliate/standalone/{task_id}/"
         
-        # Create task message with callback URL
         task_data = {
             "asin": asin,
             "taskId": task_id,
@@ -288,16 +336,16 @@ def generate_standalone_amazon_affiliate_url(asin):
             "type": "amazon_standalone"
         }
         
-        # Publish to the channel that puppeteer worker is listening on
         publish_result = r.publish("affiliate_tasks", json.dumps(task_data))
-        logger.info(f"Published to Redis channel 'affiliate_tasks': {publish_result} clients received")
+        logger.info(f"✅ PUBLISHED: Task to Redis channel 'affiliate_tasks': {publish_result} clients received")
         
         return task_id, True
+        
     except redis.exceptions.AuthenticationError as e:
-        logger.error(f"Error publishing to Redis: {str(e)}")
+        logger.error(f"❌ Redis authentication error: {str(e)}")
         return None, False
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        logger.error(f"❌ Unexpected error in affiliate URL generation: {str(e)}", exc_info=True)
         return None, False
 
 def check_stalled_standalone_task(task_id, asin):
@@ -340,6 +388,105 @@ def check_stalled_standalone_task(task_id, asin):
         logger.warning(f"Marked stalled standalone task {task_id} for ASIN {asin} as failed after timeout")
     except Exception as e:
         logger.error(f"Error checking stalled standalone task: {str(e)}", exc_info=True)
+
+def generate_affiliate_url_from_search(search_term, search_type='part_number'):
+    """
+    Generate affiliate URL by searching Amazon first, then creating affiliate link
+    
+    This sends a search task to the Puppeteer worker which will:
+    1. Search Amazon for the search term
+    2. Select the best matching product
+    3. Generate an affiliate link for that product
+    4. Return both the affiliate URL and product data
+    
+    Args:
+        search_term (str): The term to search for (part number, product name, etc.)
+        search_type (str): Type of search - 'part_number', 'product_name', or 'general'
+    
+    Returns:
+        tuple: (task_id, success_boolean)
+    """
+    logger.info(f"🔍 Creating Amazon search task: '{search_term}' (type: {search_type})")
+    
+    try:
+        # Generate unique task ID
+        task_id = str(uuid.uuid4())
+        
+        # Get Redis connection
+        redis_kwargs = get_redis_connection()
+        r = redis.Redis(**redis_kwargs)
+        
+        # Create search task message for Puppeteer worker
+        message = {
+            'taskType': 'amazon_search',
+            'searchTerm': search_term,
+            'searchType': search_type,
+            'taskId': task_id,
+            'callbackUrl': f"{getattr(settings, 'BASE_URL', 'http://localhost:8000')}/api/affiliate-search-callback/"
+        }
+        
+        # Store pending task info for tracking (expires in 1 hour)
+        r.set(f"pending_search_task:{task_id}", json.dumps({
+            'searchTerm': search_term,
+            'searchType': search_type,
+            'timestamp': timezone.now().isoformat()
+        }), ex=3600)
+        
+        # Publish to the affiliate_tasks channel that Puppeteer worker is listening to
+        publish_result = r.publish('affiliate_tasks', json.dumps(message))
+        logger.info(f"✅ Amazon search task queued: task_id={task_id}, clients_notified={publish_result}")
+        
+        # Schedule a safety check in case the task stalls
+        schedule_time = timezone.now() + datetime.timedelta(hours=1)
+        Schedule.objects.create(
+            name=f"safety_check_search_{task_id}",
+            func='affiliates.tasks.check_stalled_search_task',
+            args=json.dumps([task_id, search_term]),
+            schedule_type=Schedule.ONCE,
+            next_run=schedule_time
+        )
+        
+        return task_id, True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to queue Amazon search task for '{search_term}': {str(e)}", exc_info=True)
+        return None, False
+
+def check_stalled_search_task(task_id, search_term):
+    """
+    Safety check for stalled search tasks
+    """
+    logger.info(f"🔍 Safety check for search task {task_id} (term: '{search_term}')")
+    
+    try:
+        redis_kwargs = get_redis_connection()
+        r = redis.Redis(**redis_kwargs)
+        
+        # Check if task is still pending
+        pending_task = r.get(f"pending_search_task:{task_id}")
+        if pending_task:
+            logger.warning(f"⚠️ Search task {task_id} appears stalled after 1 hour")
+            
+            # Check if result exists
+            result = r.get(f"search_result:{task_id}")
+            if not result:
+                logger.warning(f"⚠️ No result found for stalled search task {task_id}")
+                # Could implement retry logic here if needed
+                
+                # Store error result for any clients polling
+                error_data = {
+                    "status": "error",
+                    "error": "Search task timed out after 1 hour",
+                    "searchTerm": search_term,
+                    "timestamp": timezone.now().isoformat()
+                }
+                r.set(f"search_result:{task_id}", json.dumps(error_data), ex=3600)
+                
+        else:
+            logger.info(f"✅ Search task {task_id} completed (no longer pending)")
+            
+    except Exception as e:
+        logger.error(f"❌ Error in safety check for search task {task_id}: {str(e)}")
 
 def generate_affiliate_from_search(task_id, search_term, search_key):
     """

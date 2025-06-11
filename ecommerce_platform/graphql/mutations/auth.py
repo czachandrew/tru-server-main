@@ -72,7 +72,12 @@ class AuthMutation(graphene.ObjectType):
     verify_token = graphql_jwt.Verify.Field()
     refresh_token = graphql_jwt.Refresh.Field()
     
-    # Google OAuth
+    # Google OAuth (snake_case)
     google_login = GoogleOAuthLogin.Field()
     google_register = GoogleOAuthRegister.Field()
-    link_google_account = LinkGoogleAccount.Field() 
+    link_google_account = LinkGoogleAccount.Field()
+    
+    # Google OAuth (camelCase aliases for Chrome extension compatibility)
+    googleLogin = GoogleOAuthLogin.Field()
+    googleRegister = GoogleOAuthRegister.Field()
+    linkGoogleAccount = LinkGoogleAccount.Field() 
