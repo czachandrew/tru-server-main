@@ -1262,6 +1262,7 @@ class Query(graphene.ObjectType):
         results.extend(accessory_results)
         
         # STEP 4: Create Product Record for Future (Background task)
+        debug_logger.info(f"📝 STEP 4: Creating future product record for partNumber='{partNumber}', name='{name}'")
         Query._create_product_record_for_future_static(partNumber, name)
         
         debug_logger.info(f"🎯 UNIVERSAL SEARCH RESULTS: {len(results)} total opportunities (Amazon search: {'triggered' if should_search_amazon else 'skipped'})")
@@ -1826,6 +1827,13 @@ class Query(graphene.ObjectType):
             )
             
             debug_logger.info(f"✅ Future product creation queued successfully")
+            
+            # DEMO FIX: Also execute synchronously as fallback to ensure it works
+            try:
+                result = create_future_product_record(task_data)
+                debug_logger.info(f"📝 Synchronous fallback executed: {result}")
+            except Exception as sync_error:
+                debug_logger.error(f"❌ Synchronous fallback failed: {sync_error}")
             
         except Exception as e:
             debug_logger.error(f"❌ Error queuing future product creation: {e}")

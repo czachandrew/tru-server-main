@@ -209,7 +209,8 @@ def create_future_product_record(task_data):
     2. Sourcing similar products from suppliers  
     3. Building a demand database for inventory decisions
     """
-    debug_logger.info(f"🌱 FUTURE PRODUCT CREATION: Starting task with data: {task_data}")
+    # Use print for debugging since logger might not work in worker context
+    print(f"🌱 FUTURE PRODUCT CREATION: Starting task with data: {task_data}")
     
     try:
         part_number = task_data.get('part_number')
@@ -217,7 +218,7 @@ def create_future_product_record(task_data):
         source = task_data.get('source', 'unknown')
         
         if not name and not part_number:
-            debug_logger.error("❌ No name or part number provided")
+            print("❌ No name or part number provided")
             return "Error: No product identifiers provided"
         
         # Check if we already have this product
@@ -226,7 +227,7 @@ def create_future_product_record(task_data):
             existing_product = Product.objects.filter(part_number__iexact=part_number).first()
         
         if existing_product:
-            debug_logger.info(f"✅ Product already exists: {existing_product.name}")
+            print(f"✅ Product already exists: {existing_product.name}")
             # Update metadata to track this as a future opportunity
             if not hasattr(existing_product, 'future_demand_count'):
                 existing_product.future_demand_count = 0
@@ -272,7 +273,7 @@ def create_future_product_record(task_data):
                 }
             )
             
-            debug_logger.info(f"✅ Created future product record: {product.name} (ID: {product.id})")
+            print(f"✅ Created future product record: {product.name} (ID: {product.id})")
             
             # FUTURE ENHANCEMENT: Queue additional tasks
             # 1. Search Amazon for similar products
@@ -282,9 +283,9 @@ def create_future_product_record(task_data):
             return f"Created future product record: {product.name}"
             
         except Exception as e:
-            debug_logger.error(f"❌ Error creating future product: {e}")
+            print(f"❌ Error creating future product: {e}")
             return f"Error creating future product: {str(e)}"
             
     except Exception as e:
-        debug_logger.error(f"❌ Future product task error: {e}")
+        print(f"❌ Future product task error: {e}")
         return f"Task error: {str(e)}"

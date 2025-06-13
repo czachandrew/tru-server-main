@@ -323,6 +323,6 @@ django_heroku.settings(locals())
 GOOGLE_OAUTH_CLIENT_ID = os.getenv('GOOGLE_OAUTH2_CLIENT_ID')
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv('GOOGLE_OAUTH2_CLIENT_SECRET')
 
-# Make sure these are set in your environment variables
-if not GOOGLE_OAUTH_CLIENT_ID:
-    raise ValueError("GOOGLE_OAUTH2_CLIENT_ID environment variable is required")    
+# Make sure these are set in production, but allow development without them
+if not GOOGLE_OAUTH_CLIENT_ID and not DEBUG:
+    raise ValueError("GOOGLE_OAUTH2_CLIENT_ID environment variable is required in production")    
