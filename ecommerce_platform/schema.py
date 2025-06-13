@@ -1226,6 +1226,7 @@ class Query(graphene.ObjectType):
         results.extend(internal_results)
         
         # CRITICAL FIX: Only trigger Amazon search if we don't have good existing options with affiliate offers
+        # NOTE: future_opportunity products are now excluded from internal_results, so they won't prevent Amazon search
         should_search_amazon = True
         existing_affiliate_products = 0
         
@@ -1240,15 +1241,26 @@ class Query(graphene.ObjectType):
                         existing_affiliate_products += 1
                         break
         
-        # SMART LOGIC: Don't search Amazon if we already have 2+ products with affiliate opportunities
-        if existing_affiliate_products >= 2:
+        # SMART LOGIC: Don't search Amazon if we already have good options
+        # BUT: Always search Amazon if we don't have an exact part number match
+        has_exact_match = False
+        if partNumber:
+            for result in internal_results:
+                if hasattr(result, 'match_type') and result.match_type == "exact_part_number":
+                    has_exact_match = True
+                    break
+        
+        if has_exact_match and existing_affiliate_products >= 2:
             should_search_amazon = False
-            debug_logger.info(f"✅ SKIPPING Amazon search: Found {existing_affiliate_products} products with existing affiliate opportunities")
-        elif len(internal_results) >= 5:
+            debug_logger.info(f"✅ SKIPPING Amazon search: Found exact match + {existing_affiliate_products} products with affiliate opportunities")
+        elif has_exact_match and len(internal_results) >= 5:
             should_search_amazon = False
-            debug_logger.info(f"✅ SKIPPING Amazon search: Found {len(internal_results)} internal products (sufficient options)")
+            debug_logger.info(f"✅ SKIPPING Amazon search: Found exact match + {len(internal_results)} internal products (sufficient options)")
         else:
-            debug_logger.info(f"🔍 CONDITIONAL Amazon search: Only {existing_affiliate_products} affiliate products, {len(internal_results)} total - searching for more options")
+            if not has_exact_match and partNumber:
+                debug_logger.info(f"🔍 FORCING Amazon search: No exact match found for part number '{partNumber}'")
+            else:
+                debug_logger.info(f"🔍 CONDITIONAL Amazon search: Only {existing_affiliate_products} affiliate products, {len(internal_results)} total - searching for more options")
         
         # STEP 2: CONDITIONAL Amazon Search (only if needed)
         if should_search_amazon:
@@ -1280,8 +1292,10 @@ class Query(graphene.ObjectType):
         if part_number:
             debug_logger.info(f"🔍 PRIORITY 1: Exact part number search...")
             # CRITICAL FIX: Prioritize products with offers and affiliate links
+            # IMPORTANT: Exclude future_opportunity products - they should trigger Amazon search
             exact_matches = ProductModel.objects.filter(
-                part_number__iexact=part_number
+                part_number__iexact=part_number,
+                status='active'  # Only include active products, not future_opportunity
             ).select_related('manufacturer').prefetch_related('offers', 'affiliate_links').extra(
                 select={
                     'has_offers': 'CASE WHEN EXISTS(SELECT 1 FROM offers_offer WHERE offers_offer.product_id = products_product.id) THEN 1 ELSE 0 END',
@@ -1342,6 +1356,120 @@ class Query(graphene.ObjectType):
                 results.append(result)
                 
             debug_logger.info(f"✅ Found {len(exact_matches)} exact part number matches")
+        
+        # PRIORITY 1.5: Intelligent name-based search (HIGH-CONFIDENCE matches)
+        # This catches cases where part numbers don't match but product names are very similar
+        # Example: CDW "Apple Magic Mouse" vs Amazon "Apple Magic Mouse (Wireless, Rechargeable)"
+        if name and len(results) < 3:
+            debug_logger.info(f"🔍 PRIORITY 1.5: Intelligent name-based search...")
+            
+            # Extract key product terms from the search name for fuzzy matching
+            name_lower = name.lower()
+            
+            # Build a smart query that looks for products with similar names
+            # Focus on core product terms while ignoring common variations
+            core_terms = []
+            
+            # Extract brand
+            if 'apple' in name_lower:
+                core_terms.append('apple')
+            elif 'dell' in name_lower:
+                core_terms.append('dell')
+            elif 'hp' in name_lower:
+                core_terms.append('hp')
+            elif 'lenovo' in name_lower:
+                core_terms.append('lenovo')
+            elif 'microsoft' in name_lower:
+                core_terms.append('microsoft')
+            
+            # Extract product model/type
+            if 'magic mouse' in name_lower:
+                core_terms.extend(['magic', 'mouse'])
+            elif 'macbook' in name_lower:
+                core_terms.append('macbook')
+                if 'pro' in name_lower:
+                    core_terms.append('pro')
+                elif 'air' in name_lower:
+                    core_terms.append('air')
+            elif 'surface' in name_lower:
+                core_terms.append('surface')
+            elif 'thinkpad' in name_lower:
+                core_terms.append('thinkpad')
+            
+            # Only proceed if we have meaningful core terms
+            if len(core_terms) >= 2:
+                debug_logger.info(f"🧠 Core terms extracted: {core_terms}")
+                
+                # Build query that requires ALL core terms to be present
+                name_query = ProductModel.objects.filter(status='active')
+                for term in core_terms:
+                    name_query = name_query.filter(name__icontains=term)
+                
+                # Prioritize products with affiliate links and offers
+                name_query = name_query.select_related('manufacturer').prefetch_related('offers', 'affiliate_links').extra(
+                    select={
+                        'has_offers': 'CASE WHEN EXISTS(SELECT 1 FROM offers_offer WHERE offers_offer.product_id = products_product.id) THEN 1 ELSE 0 END',
+                        'has_affiliate_links': 'CASE WHEN EXISTS(SELECT 1 FROM affiliates_affiliatelink WHERE affiliates_affiliatelink.product_id = products_product.id) THEN 1 ELSE 0 END'
+                    }
+                ).order_by('-has_offers', '-has_affiliate_links', 'name')
+                
+                # Skip products we already have
+                if results:
+                    existing_ids = [r.id for r in results]
+                    name_query = name_query.exclude(id__in=existing_ids)
+                
+                name_matches = name_query[:2]  # Limit to 2 high-confidence name matches
+                
+                for product in name_matches:
+                    # Track the first match for alternative searches
+                    if not primary_product_for_alternatives:
+                        primary_product_for_alternatives = product
+                    
+                    # Determine if this is an Amazon product
+                    is_amazon_product = False
+                    
+                    # Check manufacturer and source
+                    if hasattr(product, 'manufacturer') and product.manufacturer:
+                        manufacturer_name = product.manufacturer.name.lower()
+                        if 'amazon' in manufacturer_name and ('marketplace' in manufacturer_name or manufacturer_name == 'amazon'):
+                            is_amazon_product = True
+                    
+                    if hasattr(product, 'source') and product.source and 'amazon' in product.source.lower():
+                        is_amazon_product = True
+                    
+                    if hasattr(product, 'is_placeholder') and product.is_placeholder:
+                        is_amazon_product = True
+                    
+                    # Get affiliate links
+                    all_affiliate_links = list(AffiliateLinkModel.objects.filter(product=product))
+                    
+                    # Calculate match confidence based on name similarity
+                    match_confidence = 0.85  # High confidence for name-based matches with core terms
+                    
+                    result = ProductSearchResult(
+                        id=product.id,
+                        name=product.name,
+                        part_number=product.part_number,
+                        description=product.description,
+                        main_image=product.main_image,
+                        manufacturer=product.manufacturer,
+                        is_amazon_product=is_amazon_product,
+                        is_alternative=False,  # High-confidence name matches are primary, not alternatives
+                        match_type="intelligent_name_match",
+                        match_confidence=match_confidence,
+                        relationship_type="primary",
+                        relationship_category="name_based_match",
+                        margin_opportunity="high" if not is_amazon_product else "affiliate_only",
+                        revenue_type="product_sale" if not is_amazon_product else "affiliate_commission",
+                        offers=list(OfferModel.objects.filter(product=product).select_related('vendor')),
+                        affiliate_links=all_affiliate_links
+                    )
+                    result._source_product = product
+                    results.append(result)
+                
+                debug_logger.info(f"✅ Found {len(name_matches)} intelligent name-based matches")
+            else:
+                debug_logger.info(f"⚠️ Insufficient core terms for name-based search: {core_terms}")
         
         # PRIORITY 2: Intelligent brand/model-aware search (ALTERNATIVE products)
         # SMART FIX: Use the found product's name if no search name was provided
