@@ -270,12 +270,14 @@ def standalone_callback(request, task_id):
             extracted_part_number = asin
             
             # Check if product already exists by manufacturer + part_number
+            # CRITICAL FIX: Check both new and old manufacturer patterns
             try:
+                # Try the new manufacturer first (Amazon Marketplace)
                 product = Product.objects.get(
                     manufacturer=manufacturer,
                     part_number=extracted_part_number
                 )
-                print(f"Found existing product: {product.id} - {product.name}")
+                print(f"Found existing product with new manufacturer: {product.id} - {product.name}")
                 
                 # UPDATE the existing product with real data from callback
                 product.name = callback_product_data.get('title', product.name)
@@ -288,32 +290,53 @@ def standalone_callback(request, task_id):
                 print(f"✅ UPDATED existing product with real data: {product.name}")
                 
             except Product.DoesNotExist:
-                # Product doesn't exist, create it
+                # CRITICAL FIX: Try the old "Amazon" manufacturer as fallback
                 try:
-                    product = Product.objects.create(
-                        name=callback_product_data.get('title', f"Amazon Product {asin}"),
-                        slug=slugify(callback_product_data.get('title', f"amazon-product-{asin}")),
-                        description=callback_product_data.get('description', ''),
-                        part_number=extracted_part_number,
-                        manufacturer=manufacturer,
-                        main_image=callback_product_data.get('image', ''),
-                        status='active',
-                        source='amazon',
-                        is_placeholder=False
+                    old_amazon_manufacturer = Manufacturer.objects.get(name="Amazon")
+                    product = Product.objects.get(
+                        manufacturer=old_amazon_manufacturer,
+                        part_number=extracted_part_number
                     )
-                    print(f"✅ Created new product with real data: {product.name}")
-                except Exception as create_error:
-                    print(f"Error creating product: {create_error}")
-                    # Try to find existing product by ASIN as fallback
-                    existing_by_asin = Product.objects.filter(
-                        part_number=asin,
-                        source='amazon'
-                    ).first()
-                    if existing_by_asin:
-                        product = existing_by_asin
-                        print(f"Found fallback product by ASIN: {product.id}")
-                    else:
-                        raise create_error
+                    print(f"Found existing placeholder product with old manufacturer: {product.id} - {product.name}")
+                    
+                    # UPDATE the product with real data AND fix the manufacturer
+                    product.name = callback_product_data.get('title', product.name)
+                    product.description = callback_product_data.get('description', product.description)
+                    product.main_image = callback_product_data.get('image', product.main_image)
+                    product.slug = slugify(callback_product_data.get('title', product.name))
+                    product.manufacturer = manufacturer  # CRITICAL: Update to correct manufacturer
+                    product.is_placeholder = False
+                    product.status = 'active'
+                    product.save()
+                    print(f"✅ UPDATED placeholder product with real data and fixed manufacturer: {product.name}")
+                    
+                except (Manufacturer.DoesNotExist, Product.DoesNotExist):
+                    # Product doesn't exist, create it
+                    try:
+                        product = Product.objects.create(
+                            name=callback_product_data.get('title', f"Amazon Product {asin}"),
+                            slug=slugify(callback_product_data.get('title', f"amazon-product-{asin}")),
+                            description=callback_product_data.get('description', ''),
+                            part_number=extracted_part_number,
+                            manufacturer=manufacturer,
+                            main_image=callback_product_data.get('image', ''),
+                            status='active',
+                            source='amazon',
+                            is_placeholder=False
+                        )
+                        print(f"✅ Created new product with real data: {product.name}")
+                    except Exception as create_error:
+                        print(f"Error creating product: {create_error}")
+                        # Try to find existing product by ASIN as fallback
+                        existing_by_asin = Product.objects.filter(
+                            part_number=asin,
+                            source='amazon'
+                        ).first()
+                        if existing_by_asin:
+                            product = existing_by_asin
+                            print(f"Found fallback product by ASIN: {product.id}")
+                        else:
+                            raise create_error
                         
         # PRIORITY 2: Use Redis product data if available        
         elif product_data_json:

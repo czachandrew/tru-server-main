@@ -995,47 +995,173 @@ class Query(graphene.ObjectType):
                     results.append(result)
                     debug_logger.info(f"📝 Created placeholder Amazon product for ASIN: {asin}")
                 
-                # IMPORTANT FIX: For direct ASIN requests, ONLY find supplier alternatives
-                # DO NOT trigger additional Amazon searches or create future product records
-                debug_logger.info(f"🔍 ASIN SEARCH: Looking for supplier alternatives only (no additional Amazon searches)")
+                # ENHANCED ALTERNATIVES DISCOVERY - Find ALL relevant supplier products
+                debug_logger.info(f"🔍 ASIN SEARCH: Looking for supplier alternatives using multiple strategies")
                 
-                # Find supplier alternatives using CONTEXT-AWARE INTERNAL inventory search
+                # STRATEGY 1: Context-aware search (using full Amazon product name)
                 try:
                     if name:
-                        debug_logger.info(f"🧠 CONTEXT-AWARE SEARCH: Using full Amazon product context")
+                        debug_logger.info(f"🧠 STRATEGY 1: Context-aware search using Amazon product name")
                         debug_logger.info(f"🔍 Amazon product: {name[:100]}...")
                         
-                        # Use the new context-aware search instead of simple term extraction
-                        internal_alternatives = Query._search_internal_inventory_context_aware_static(
+                        context_alternatives = Query._search_internal_inventory_context_aware_static(
                             amazon_product_name=name
                         )
                         
-                        # Add only supplier alternatives (not Amazon products)
-                        for item in internal_alternatives:
-                            if not item.is_amazon_product and item.is_alternative:
+                        debug_logger.info(f"🔍 Context-aware found {len(context_alternatives)} alternatives")
+                        
+                        # Process context-aware alternatives
+                        for item in context_alternatives:
+                            debug_logger.info(f"🔍 Context item: {item.name[:50]}... (ID: {getattr(item, 'id', 'unknown')})")
+                            
+                            # Check if this is an Amazon product
+                            item_is_amazon = getattr(item, 'is_amazon_product', False)
+                            if not item_is_amazon:
+                                # Mark as alternative and add to results
+                                item.is_alternative = True
+                                item.relationship_type = "equivalent"
+                                item.relationship_category = "context_aware_alternative"
                                 results.append(item)
-                                debug_logger.info(f"✅ Added supplier alternative: {item.name}")
-                    else:
-                        debug_logger.info(f"⚠️ No Amazon product name provided for context-aware search")
+                                debug_logger.info(f"✅ ADDED context alternative: {item.name} (ID: {getattr(item, 'id', 'unknown')})")
+                            else:
+                                debug_logger.info(f"⚠️ SKIPPED Amazon product: {item.name}")
                         
                 except Exception as e:
-                    debug_logger.error(f"❌ Error finding supplier alternatives: {e}")
+                    debug_logger.error(f"❌ Context-aware search failed: {e}", exc_info=True)
                 
-                # STEP 3: Find relevant accessories (CRITICAL FIX)
+                # STRATEGY 2: Direct keyword search (fallback with specific terms)
                 try:
-                    if name:
-                        debug_logger.info(f"🎯 Searching for relevant accessories for: {name}")
-                        # Temporarily disable to prevent memory issues
-                        accessory_results = []  # Query._find_relevant_accessories_for_product_static(name)
-                        
-                        for accessory in accessory_results:
-                            results.append(accessory)
-                            debug_logger.info(f"✅ Added accessory: {accessory.name}")
+                    debug_logger.info(f"🧠 STRATEGY 2: Direct keyword search for keyboard/mouse products")
                     
-                except Exception as e:
-                    debug_logger.error(f"❌ Error finding accessories: {e}")
+                    # Extract key terms from the Amazon product name
+                    name_lower = name.lower() if name else ""
+                    
+                    # Build search terms based on product type
+                    direct_search_terms = []
+                    if 'keyboard' in name_lower and 'mouse' in name_lower:
+                        direct_search_terms = ['keyboard mouse', 'keyboard and mouse', 'wireless keyboard mouse']
+                    elif 'keyboard' in name_lower:
+                        direct_search_terms = ['keyboard', 'wireless keyboard']
+                    elif 'mouse' in name_lower:
+                        direct_search_terms = ['mouse', 'wireless mouse']
+                    
+                    for search_term in direct_search_terms:
+                        debug_logger.info(f"🔍 Direct search for: '{search_term}'")
+                        
+                        direct_alternatives = Query._search_internal_inventory_static(
+                            part_number=None, 
+                            name=search_term
+                        )
+                        
+                        debug_logger.info(f"🔍 Direct search found {len(direct_alternatives)} results for '{search_term}'")
+                        
+                        # Add unique alternatives (avoid duplicates)
+                        existing_ids = {getattr(r, 'id', None) for r in results}
+                        
+                        for item in direct_alternatives:
+                            item_id = getattr(item, 'id', None)
+                            if item_id and item_id not in existing_ids:
+                                item_is_amazon = getattr(item, 'is_amazon_product', False)
+                                if not item_is_amazon:
+                                    item.is_alternative = True
+                                    item.relationship_type = "equivalent"
+                                    item.relationship_category = f"direct_search_{search_term.replace(' ', '_')}"
+                                    results.append(item)
+                                    existing_ids.add(item_id)
+                                    debug_logger.info(f"✅ ADDED direct alternative: {item.name} (ID: {item_id})")
                 
-                debug_logger.info(f"🎯 ASIN SEARCH COMPLETE: {len(results)} results (no search tasks triggered)")
+                except Exception as e:
+                    debug_logger.error(f"❌ Direct keyword search failed: {e}", exc_info=True)
+                
+                # STRATEGY 3: Context-aware high-value product discovery 
+                try:
+                    debug_logger.info(f"🧠 STRATEGY 3: Context-aware high-value product discovery")
+                    
+                    # Extract context from Amazon product name to guide our search
+                    context = Query._extract_product_context_static(name)
+                    detected_category = context.get('category')
+                    debug_logger.info(f"🔍 Detected product category: '{detected_category}' from name: '{name[:50]}...'")
+                    
+                    # Build context-aware search filters
+                    category_filters = Query._build_category_specific_filters_static(detected_category)
+                    
+                    if category_filters:
+                        debug_logger.info(f"🎯 Using category-specific filters for '{detected_category}'")
+                        
+                        # Get products with actual monetization opportunities
+                        from django.db.models import Q, Exists, OuterRef
+                        
+                        high_value_products = ProductModel.objects.filter(
+                            category_filters,  # ← SMART CONTEXT-AWARE FILTERS
+                            Q(Exists(OfferModel.objects.filter(product=OuterRef('pk'))) | 
+                              Exists(AffiliateLinkModel.objects.filter(product=OuterRef('pk'))))
+                        ).select_related('manufacturer').prefetch_related('offers', 'affiliate_links')[:5]
+                        
+                        debug_logger.info(f"🔍 Context-aware search found {high_value_products.count()} {detected_category} accessories with offers/links")
+                        
+                        # Add unique context-aware alternatives
+                        existing_ids = {getattr(r, 'id', None) for r in results}
+                        
+                        for product in high_value_products:
+                            if product.id not in existing_ids:
+                                # Check if this is an Amazon product (REFINED LOGIC)
+                                is_amazon_product = False
+                                if hasattr(product, 'manufacturer') and product.manufacturer:
+                                    manufacturer_name = product.manufacturer.name.lower()
+                                    # CRITICAL FIX: Only consider "Amazon" as Amazon product, not "Amazon Marketplace"
+                                    # Amazon Marketplace products are actually supplier/third-party products sold through Amazon
+                                    if manufacturer_name == 'amazon' or manufacturer_name.startswith('amazon,'):
+                                        is_amazon_product = True
+                                    # Amazon Marketplace = third-party sellers on Amazon = should be treated as suppliers
+                                    elif 'amazon marketplace' in manufacturer_name:
+                                        is_amazon_product = False  # Explicitly mark as NOT Amazon product
+                                
+                                if not is_amazon_product:
+                                    # Convert to ProductSearchResult with proper relationship classification
+                                    relationship_category = f"{detected_category}_accessory" if detected_category else "high_value_alternative"
+                                    
+                                    result = ProductSearchResult(
+                                        id=product.id,
+                                        name=product.name,
+                                        part_number=product.part_number,
+                                        description=product.description,
+                                        main_image=product.main_image,
+                                        manufacturer=product.manufacturer,
+                                        is_amazon_product=False,
+                                        is_alternative=True,
+                                        match_type="context_aware_accessory",
+                                        match_confidence=0.75,  # Slightly lower since these are accessories, not equivalents
+                                        relationship_type="accessory",  # ← PROPER RELATIONSHIP TYPE
+                                        relationship_category=relationship_category,  # ← CONTEXT-AWARE CATEGORY
+                                        margin_opportunity="high",
+                                        revenue_type="cross_sell_opportunity",  # ← MORE ACCURATE REVENUE TYPE
+                                        offers=list(OfferModel.objects.filter(product=product).select_related('vendor')),
+                                        affiliate_links=list(AffiliateLinkModel.objects.filter(product=product))
+                                    )
+                                    result._source_product = product
+                                    results.append(result)
+                                    existing_ids.add(product.id)
+                                    debug_logger.info(f"✅ ADDED {detected_category} accessory: {product.name} (ID: {product.id})")
+                    else:
+                        debug_logger.info(f"⚠️ Category '{detected_category}' doesn't warrant accessory suggestions, skipping high-value discovery")
+                
+                except Exception as e:
+                    debug_logger.error(f"❌ Context-aware high-value product discovery failed: {e}", exc_info=True)
+                
+                # COMPREHENSIVE LOGGING
+                alternatives_count = len([r for r in results if getattr(r, 'is_alternative', False)])
+                debug_logger.info(f"📊 FINAL ALTERNATIVES SUMMARY:")
+                debug_logger.info(f"   Total results: {len(results)}")
+                debug_logger.info(f"   Alternatives found: {alternatives_count}")
+                debug_logger.info(f"   Primary Amazon product: {'✅' if any(not getattr(r, 'is_alternative', True) for r in results) else '❌'}")
+                
+                for i, result in enumerate(results):
+                    result_type = "ALTERNATIVE" if getattr(result, 'is_alternative', False) else "PRIMARY"
+                    result_id = getattr(result, 'id', 'unknown')
+                    result_name = getattr(result, 'name', 'unknown')[:50]
+                    debug_logger.info(f"   {i+1}. {result_type}: {result_name}... (ID: {result_id})")
+                
+                debug_logger.info(f"🎯 ASIN SEARCH COMPLETE: {len(results)} total results")
                 return results
             
             # PRIORITY 2: Part Number Search (CDW, Staples, Microsoft, etc.)
@@ -1152,9 +1278,15 @@ class Query(graphene.ObjectType):
         # PRIORITY 1: Exact part number match (PRIMARY products)
         if part_number:
             debug_logger.info(f"🔍 PRIORITY 1: Exact part number search...")
+            # CRITICAL FIX: Prioritize products with offers and affiliate links
             exact_matches = ProductModel.objects.filter(
                 part_number__iexact=part_number
-            ).select_related('manufacturer')[:3]
+            ).select_related('manufacturer').prefetch_related('offers', 'affiliate_links').extra(
+                select={
+                    'has_offers': 'CASE WHEN EXISTS(SELECT 1 FROM offers_offer WHERE offers_offer.product_id = products_product.id) THEN 1 ELSE 0 END',
+                    'has_affiliate_links': 'CASE WHEN EXISTS(SELECT 1 FROM affiliates_affiliatelink WHERE affiliates_affiliatelink.product_id = products_product.id) THEN 1 ELSE 0 END'
+                }
+            ).order_by('-has_offers', '-has_affiliate_links', 'name')[:3]
             
             for product in exact_matches:
                 # Track the first match for alternative searches
@@ -1164,15 +1296,27 @@ class Query(graphene.ObjectType):
                 # Determine if this is an Amazon product or supplier product
                 is_amazon_product = False
                 
-                # Check if product has Amazon characteristics
-                if hasattr(product, 'main_image') and product.main_image:
-                    if 'amazon.com' in product.main_image or 'images-amazon.com' in product.main_image:
+                # IMPROVED: More intelligent Amazon product detection
+                # 1. Check if manufacturer is explicitly Amazon/Amazon Marketplace
+                if hasattr(product, 'manufacturer') and product.manufacturer:
+                    manufacturer_name = product.manufacturer.name.lower()
+                    if 'amazon' in manufacturer_name and ('marketplace' in manufacturer_name or manufacturer_name == 'amazon'):
                         is_amazon_product = True
                 
-                # Check for existing Amazon affiliate links
-                existing_amazon_links = list(AffiliateLinkModel.objects.filter(
-                    product=product, 
-                    platform='amazon'
+                # 2. Check if product source indicates Amazon origin
+                if hasattr(product, 'source') and product.source and 'amazon' in product.source.lower():
+                    is_amazon_product = True
+                
+                # 3. Check if product is explicitly marked as placeholder
+                if hasattr(product, 'is_placeholder') and product.is_placeholder:
+                    is_amazon_product = True
+                    
+                # NOTE: We don't use main_image URL as indicator since supplier products 
+                # often use Amazon images but are not Amazon products
+                
+                # Get ALL affiliate links (not just Amazon)
+                all_affiliate_links = list(AffiliateLinkModel.objects.filter(
+                    product=product
                 ))
                 
                 result = ProductSearchResult(
@@ -1191,7 +1335,7 @@ class Query(graphene.ObjectType):
                     margin_opportunity="high" if not is_amazon_product else "affiliate_only",
                     revenue_type="product_sale" if not is_amazon_product else "affiliate_commission",
                     offers=list(OfferModel.objects.filter(product=product).select_related('vendor')),
-                    affiliate_links=existing_amazon_links
+                    affiliate_links=all_affiliate_links
                 )
                 result._source_product = product
                 results.append(result)
@@ -1252,10 +1396,19 @@ class Query(graphene.ObjectType):
                 else:
                     debug_logger.info(f"✅ Product type '{product_type}' detected, searching for {search_brand} {product_type} alternatives")
                 
+                    # CRITICAL FIX: Prioritize products with offers and affiliate links
                     same_brand_query = ProductModel.objects.filter(
                         manufacturer__name__icontains=search_brand,
                         status='active'
-                    ).select_related('manufacturer')
+                    ).select_related('manufacturer').prefetch_related('offers', 'affiliate_links')
+                    
+                    # IMPORTANT: Order by monetization opportunities
+                    same_brand_query = same_brand_query.extra(
+                        select={
+                            'has_offers': 'CASE WHEN EXISTS(SELECT 1 FROM offers_offer WHERE offers_offer.product_id = products_product.id) THEN 1 ELSE 0 END',
+                            'has_affiliate_links': 'CASE WHEN EXISTS(SELECT 1 FROM affiliates_affiliatelink WHERE affiliates_affiliatelink.product_id = products_product.id) THEN 1 ELSE 0 END'
+                        }
+                    ).order_by('-has_offers', '-has_affiliate_links', 'name')
                 
                     # Add product type filter if detected
                     if product_type == 'laptop':
@@ -1291,16 +1444,26 @@ class Query(graphene.ObjectType):
                     same_brand_products = same_brand_query[:3]  # Limit to 3 same-brand alternatives
                 
                     for product in same_brand_products:
-                        # Check if this is an Amazon product
+                        # Check if this is an Amazon product using improved logic
                         is_amazon_product = False
-                        if hasattr(product, 'main_image') and product.main_image:
-                            if 'amazon.com' in product.main_image or 'images-amazon.com' in product.main_image:
+                        
+                        # 1. Check if manufacturer is explicitly Amazon/Amazon Marketplace
+                        if hasattr(product, 'manufacturer') and product.manufacturer:
+                            manufacturer_name = product.manufacturer.name.lower()
+                            if 'amazon' in manufacturer_name and ('marketplace' in manufacturer_name or manufacturer_name == 'amazon'):
                                 is_amazon_product = True
+                        
+                        # 2. Check if product source indicates Amazon origin
+                        if hasattr(product, 'source') and product.source and 'amazon' in product.source.lower():
+                            is_amazon_product = True
+                        
+                        # 3. Check if product is explicitly marked as placeholder
+                        if hasattr(product, 'is_placeholder') and product.is_placeholder:
+                            is_amazon_product = True
                     
-                        # Get affiliate links
-                        existing_amazon_links = list(AffiliateLinkModel.objects.filter(
-                            product=product, 
-                            platform='amazon'
+                        # Get ALL affiliate links (not just Amazon)
+                        all_affiliate_links = list(AffiliateLinkModel.objects.filter(
+                            product=product
                         ))
                     
                         # Determine relationship category
@@ -1326,7 +1489,7 @@ class Query(graphene.ObjectType):
                             margin_opportunity="high" if not is_amazon_product else "affiliate_only",
                             revenue_type="product_sale" if not is_amazon_product else "affiliate_commission",
                             offers=list(OfferModel.objects.filter(product=product).select_related('vendor')),
-                            affiliate_links=existing_amazon_links
+                            affiliate_links=all_affiliate_links
                         )
                         result._source_product = product
                         results.append(result)
@@ -1345,9 +1508,18 @@ class Query(graphene.ObjectType):
                 else:
                     debug_logger.info(f"✅ Searching for cross-brand {product_type} alternatives")
                 
+                    # CRITICAL FIX: Prioritize products with offers and affiliate links
                     cross_brand_query = ProductModel.objects.filter(
                         status='active'
-                    ).select_related('manufacturer')
+                    ).select_related('manufacturer').prefetch_related('offers', 'affiliate_links')
+                    
+                    # IMPORTANT: Order by monetization opportunities
+                    cross_brand_query = cross_brand_query.extra(
+                        select={
+                            'has_offers': 'CASE WHEN EXISTS(SELECT 1 FROM offers_offer WHERE offers_offer.product_id = products_product.id) THEN 1 ELSE 0 END',
+                            'has_affiliate_links': 'CASE WHEN EXISTS(SELECT 1 FROM affiliates_affiliatelink WHERE affiliates_affiliatelink.product_id = products_product.id) THEN 1 ELSE 0 END'
+                        }
+                    ).order_by('-has_offers', '-has_affiliate_links', 'name')
                 
                     # Filter by product type
                     if product_type == 'laptop':
@@ -1385,16 +1557,26 @@ class Query(graphene.ObjectType):
                     cross_brand_products = cross_brand_query[:2]  # Limit to 2 cross-brand alternatives
                 
                     for product in cross_brand_products:
-                        # Check if this is an Amazon product
+                        # Check if this is an Amazon product using improved logic
                         is_amazon_product = False
-                        if hasattr(product, 'main_image') and product.main_image:
-                            if 'amazon.com' in product.main_image or 'images-amazon.com' in product.main_image:
+                        
+                        # 1. Check if manufacturer is explicitly Amazon/Amazon Marketplace
+                        if hasattr(product, 'manufacturer') and product.manufacturer:
+                            manufacturer_name = product.manufacturer.name.lower()
+                            if 'amazon' in manufacturer_name and ('marketplace' in manufacturer_name or manufacturer_name == 'amazon'):
                                 is_amazon_product = True
+                        
+                        # 2. Check if product source indicates Amazon origin
+                        if hasattr(product, 'source') and product.source and 'amazon' in product.source.lower():
+                            is_amazon_product = True
+                        
+                        # 3. Check if product is explicitly marked as placeholder
+                        if hasattr(product, 'is_placeholder') and product.is_placeholder:
+                            is_amazon_product = True
                     
-                        # Get affiliate links
-                        existing_amazon_links = list(AffiliateLinkModel.objects.filter(
-                            product=product, 
-                            platform='amazon'
+                        # Get ALL affiliate links (not just Amazon)
+                        all_affiliate_links = list(AffiliateLinkModel.objects.filter(
+                            product=product
                         ))
                     
                         # Determine relationship category
@@ -1420,7 +1602,7 @@ class Query(graphene.ObjectType):
                             margin_opportunity="medium" if not is_amazon_product else "affiliate_only",
                             revenue_type="product_sale" if not is_amazon_product else "affiliate_commission",
                             offers=list(OfferModel.objects.filter(product=product).select_related('vendor')),
-                            affiliate_links=existing_amazon_links
+                            affiliate_links=all_affiliate_links
                         )
                         result._source_product = product
                         results.append(result)
@@ -2113,17 +2295,22 @@ class Query(graphene.ObjectType):
                 context['product_line'] = product_name
                 break
         
-        # Category detection
+        # Category detection (order matters - check specific combos first)
         category_patterns = [
-            ('laptop', ['laptop', 'notebook']),
-            ('desktop', ['desktop', 'pc', 'computer']),
-            ('monitor', ['monitor', 'display', 'screen']),
-            ('keyboard', ['keyboard', 'kb']),
-            ('mouse', ['mouse', 'mice']),
-            ('tablet', ['tablet', 'ipad']),
-            ('phone', ['phone', 'iphone', 'smartphone']),
-            ('headphones', ['headphones', 'earbuds', 'airpods']),
-            ('speaker', ['speaker', 'audio']),
+            # Check for combos first before individual components
+            ('keyboard_mouse_combo', ['keyboard and mouse', 'mouse and keyboard', 'keyboard + mouse', 'wireless keyboard and mouse', 'keyboard mouse combo']),
+            # Then check for individual product types
+            ('laptop', ['laptop', 'notebook', 'macbook', 'ultrabook', 'thinkpad', 'surface laptop']),
+            ('desktop', ['desktop pc', 'desktop computer', 'pc computer', 'workstation', 'all-in-one']),
+            ('monitor', ['monitor', 'display', 'screen', 'lcd', 'led', 'oled']),
+            ('gaming', ['gaming laptop', 'gaming desktop', 'gaming monitor', 'gaming pc', 'gaming chair', 'gaming headset']),
+            ('printer', ['printer', 'inkjet', 'laserjet', 'multifunction', 'mfp', 'all-in-one printer']),
+            ('keyboard', ['keyboard', 'kb']),  # Will only match if combo didn't match first
+            ('mouse', ['mouse', 'mice']),  # Will only match if combo didn't match first
+            ('tablet', ['tablet', 'ipad', 'surface pro']),
+            ('phone', ['phone', 'iphone', 'smartphone', 'android']),
+            ('headphones', ['headphones', 'earbuds', 'airpods', 'headset']),
+            ('speaker', ['speaker', 'audio', 'soundbar']),
             ('cable', ['cable', 'cord']),
             ('adapter', ['adapter', 'charger']),
             ('stand', ['stand', 'mount']),
@@ -2169,6 +2356,89 @@ class Query(graphene.ObjectType):
             context['specs'].extend(year_matches)
         
         return context
+
+    @staticmethod
+    def _build_category_specific_filters_static(detected_category):
+        """
+        Build category-appropriate search filters for high-value discovery.
+        Returns None if category doesn't warrant accessory suggestions.
+        
+        This enables context-aware accessory recommendations:
+        - Laptop searches -> laptop accessories (stands, chargers, hubs)
+        - Monitor searches -> monitor accessories (mounts, cables)
+        - Phone searches -> phone accessories (cases, chargers)
+        
+        Returns None for categories that don't typically need accessories
+        (like keyboards/mice which ARE accessories themselves).
+        """
+        from django.db.models import Q
+        
+        if not detected_category:
+            debug_logger.info(f"🔍 No category detected, skipping accessory suggestions")
+            return None
+        
+        # Define what accessories make sense for each category
+        category_accessory_mapping = {
+            'laptop': [
+                'laptop stand', 'laptop mount', 'laptop charger', 'laptop power', 
+                'usb hub', 'docking station', 'laptop sleeve', 'laptop bag',
+                'wireless mouse', 'bluetooth keyboard', 'laptop cooler', 'port replicator',
+                'usb-c hub', 'thunderbolt dock', 'laptop riser', 'notebook stand',
+                'laptop adapter', 'laptop cable', 'cooling pad'
+            ],
+            'desktop': [
+                'desktop mount', 'keyboard', 'mouse', 'monitor', 'webcam', 
+                'speakers', 'microphone', 'usb hub', 'cable management',
+                'desktop stand', 'cpu holder', 'monitor arm', 'pc cable',
+                'computer cable', 'desktop power', 'pc adapter'
+            ],
+            'monitor': [
+                'monitor mount', 'monitor stand', 'monitor arm', 'monitor riser',
+                'hdmi cable', 'displayport cable', 'vga cable', 'dvi cable',
+                'cable', 'mount', 'stand', 'arm',  # Broader terms to match actual inventory
+                'monitor light', 'screen cleaner', 'dual monitor stand',
+                'display cable', 'monitor cable', 'screen mount'
+            ],
+            'phone': [
+                'phone case', 'phone charger', 'wireless charger', 'phone mount',
+                'screen protector', 'earbuds', 'phone stand', 'car mount',
+                'phone holder', 'charging cable', 'phone adapter', 'mobile charger'
+            ],
+            'tablet': [
+                'tablet case', 'tablet stand', 'stylus', 'tablet charger',
+                'keyboard case', 'screen protector', 'tablet mount', 'apple pencil',
+                'tablet adapter', 'tablet cable', 'tablet holder'
+            ],
+            # NEW: Add gaming category
+            'gaming': [
+                'gaming mouse', 'gaming keyboard', 'gaming headset', 'gaming chair',
+                'gaming mousepad', 'gaming cable', 'gaming adapter', 'rgb lighting',
+                'gaming stand', 'controller', 'gaming hub'
+            ],
+            # NEW: Add printer category  
+            'printer': [
+                'printer cable', 'usb cable', 'printer stand', 'paper tray',
+                'ink cartridge', 'toner', 'printer adapter', 'print server'
+            ]
+            # Note: We intentionally DON'T include mappings for:
+            # - keyboard, mouse, keyboard_mouse_combo (they ARE accessories, not things that need accessories)
+            # - Individual keyboard/mouse products don't typically need their own accessories
+        }
+        
+        accessory_terms = category_accessory_mapping.get(detected_category)
+        
+        if not accessory_terms:
+            debug_logger.info(f"🔍 Category '{detected_category}' doesn't warrant accessory suggestions")
+            return None
+        
+        debug_logger.info(f"🎯 Building accessory filters for '{detected_category}': {len(accessory_terms)} terms")
+        
+        # Build OR query for all relevant accessory terms
+        accessory_filter = Q()
+        for term in accessory_terms:
+            accessory_filter |= Q(name__icontains=term)
+        
+        return accessory_filter
 
 # Mutation Class
 class CreateProduct(graphene.Mutation):
@@ -3307,25 +3577,69 @@ def get_amazon_product_by_asin(asin):
     ).select_related('product').first()
     
     if affiliate_link and affiliate_link.product:
-        debug_logger.info(f"📦 Found Amazon product via affiliate link: {affiliate_link.product.name} (placeholder={affiliate_link.product.is_placeholder})")
-        return affiliate_link.product
+        # CRITICAL FIX: Prefer non-placeholder products
+        if not getattr(affiliate_link.product, 'is_placeholder', False):
+            debug_logger.info(f"📦 Found non-placeholder Amazon product via affiliate link: {affiliate_link.product.name}")
+            return affiliate_link.product
+        else:
+            debug_logger.info(f"⚠️ Affiliate link points to placeholder, looking for non-placeholder alternative...")
+            # Look for non-placeholder alternative with same ASIN
+            non_placeholder = ProductModel.objects.filter(
+                part_number=asin, 
+                is_placeholder=False
+            ).first()
+            if non_placeholder:
+                debug_logger.info(f"✅ Found non-placeholder alternative: {non_placeholder.name}")
+                # CRITICAL: Check if non-placeholder already has an Amazon affiliate link
+                existing_non_placeholder_link = AffiliateLinkModel.objects.filter(
+                    product=non_placeholder,
+                    platform='amazon',
+                    platform_id=asin
+                ).first()
+                
+                if existing_non_placeholder_link:
+                    debug_logger.info(f"🔗 Non-placeholder already has affiliate link, using that one")
+                    return non_placeholder
+                else:
+                    # Safe to update the affiliate link
+                    debug_logger.info(f"🔗 Updating affiliate link to point to real product")
+                    try:
+                        affiliate_link.product = non_placeholder
+                        affiliate_link.save()
+                        debug_logger.info(f"✅ Successfully updated affiliate link")
+                        return non_placeholder
+                    except Exception as e:
+                        debug_logger.error(f"❌ Failed to update affiliate link: {e}")
+                        # Return the non-placeholder product anyway since it exists
+                        return non_placeholder
+            else:
+                debug_logger.warning(f"⚠️ No non-placeholder found, returning placeholder: {affiliate_link.product.name}")
+                return affiliate_link.product  # Return placeholder as fallback
     
-    # Method 2: Look for product with ASIN as part number (fallback)
+    # Method 2: Look for non-placeholder product with ASIN as part number
     try:
-        product = ProductModel.objects.get(part_number=asin)
-        debug_logger.info(f"📦 Found Amazon product via part number: {product.name} (placeholder={product.is_placeholder})")
-        return product
+        # CRITICAL FIX: Prefer non-placeholder products
+        product = ProductModel.objects.filter(part_number=asin, is_placeholder=False).first()
+        if product:
+            debug_logger.info(f"📦 Found non-placeholder Amazon product via part number: {product.name}")
+            return product
+        
+        # Fallback to placeholder if no non-placeholder exists
+        placeholder_product = ProductModel.objects.get(part_number=asin)
+        debug_logger.info(f"📦 Found placeholder Amazon product via part number: {placeholder_product.name} (placeholder={placeholder_product.is_placeholder})")
+        return placeholder_product
     except ProductModel.DoesNotExist:
         pass
     
-    # Method 3: Look for product name containing ASIN
+    # Method 3: Look for product name containing ASIN (prefer non-placeholder)
     products_with_asin = ProductModel.objects.filter(
         Q(name__icontains=asin) | Q(description__icontains=asin)
-    ).first()
+    ).order_by('is_placeholder')  # Non-placeholder products first
     
-    if products_with_asin:
-        debug_logger.info(f"📦 Found Amazon product via name/description: {products_with_asin.name} (placeholder={products_with_asin.is_placeholder})")
-        return products_with_asin
+    product = products_with_asin.first()
+    if product:
+        debug_logger.info(f"📦 Found Amazon product via name/description: {product.name} (placeholder={getattr(product, 'is_placeholder', False)})")
+        return product
     
     debug_logger.warning(f"❌ No Amazon product found for ASIN: {asin}")
     return None
