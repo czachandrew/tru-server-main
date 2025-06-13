@@ -925,11 +925,16 @@ class Query(graphene.ObjectType):
                 # NEW: Server-side waiting logic when waitForAffiliate=True
                 if waitForAffiliate and affiliate_link and not affiliate_link.affiliate_url:
                     debug_logger.info(f"⏳ Waiting for affiliate link completion...")
-                    affiliate_link, completed = wait_for_affiliate_completion(asin, timeout_seconds=30)
-                    if completed:
-                        debug_logger.info(f"✅ Affiliate link completed during wait")
-                    else:
-                        debug_logger.warning(f"⏰ Affiliate link generation timed out")
+                    # Reduce timeout to 5 seconds to prevent Heroku request timeout
+                    try:
+                        affiliate_link, completed = wait_for_affiliate_completion(asin, timeout_seconds=5)
+                        if completed:
+                            debug_logger.info(f"✅ Affiliate link completed during wait")
+                        else:
+                            debug_logger.warning(f"⏰ Affiliate link generation timed out after 5 seconds")
+                    except Exception as e:
+                        debug_logger.error(f"❌ Error waiting for affiliate completion: {e}")
+                        # Continue with the existing affiliate_link even if waiting failed
                 
                 # Try to find existing Amazon product for this ASIN
                 amazon_product = get_amazon_product_by_asin(asin)
