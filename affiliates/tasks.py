@@ -59,6 +59,8 @@ def generate_amazon_affiliate_url(affiliate_link_id, asin):
         
         # Create task message with callback URL
         task_data = {
+            "type": "amazon_affiliate",
+            "taskType": "amazon_affiliate",
             "asin": asin,
             "taskId": task_id,
             "callbackUrl": callback_url
@@ -329,11 +331,13 @@ def generate_standalone_amazon_affiliate_url(asin):
         base_url = getattr(settings, 'BASE_URL', 'http://localhost:8000')
         callback_url = f"{base_url}/api/affiliate/standalone/{task_id}/"
         
+        # Standardize on 'taskType' so puppeteer worker can detect message consistently
         task_data = {
+            "type": "amazon_standalone",
+            "taskType": "amazon_standalone",
             "asin": asin,
             "taskId": task_id,
-            "callbackUrl": callback_url,
-            "type": "amazon_standalone"
+            "callbackUrl": callback_url
         }
         
         publish_result = r.publish("affiliate_tasks", json.dumps(task_data))

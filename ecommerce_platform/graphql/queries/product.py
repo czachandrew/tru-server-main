@@ -1039,46 +1039,12 @@ def handle_affiliate_link_for_asin(product, asin, url):
     return None
 
 def ensure_affiliate_link_exists(asin):
-    """Always ensure we have an affiliate link for this ASIN"""
-    try:
-        # First, check if affiliate link already exists
-        existing_link = AffiliateLink.objects.filter(
-            platform='amazon',
-            platform_id=asin
-        ).first()
-        
-        if existing_link:
-            debug_logger.info(f"✅ EXISTING affiliate link found for ASIN {asin}: {existing_link.affiliate_url}")
-            return existing_link
-        
-        # If no existing link, create a new one
-        debug_logger.info(f"🔄 Creating NEW affiliate link for ASIN: {asin}")
-        
-        # We need to trigger the affiliate link creation task
-        # But first check if we already have a product for this ASIN
-        from affiliates.tasks import generate_standalone_amazon_affiliate_url
-        
-        task_id, success = generate_standalone_amazon_affiliate_url(asin)
-        
-        if success:
-            debug_logger.info(f"✅ Affiliate link creation task queued: {task_id}")
-            
-            # Return a placeholder affiliate link object
-            class PlaceholderAffiliateLink:
-                def __init__(self, asin):
-                    self.id = f"pending_{asin}"
-                    self.platform = 'amazon'
-                    self.platform_id = asin
-                    self.affiliate_url = ''  # Empty until generated
-                    
-            return PlaceholderAffiliateLink(asin)
-        else:
-            debug_logger.error(f"❌ Failed to queue affiliate link creation for ASIN: {asin}")
-            return None
-            
-    except Exception as e:
-        debug_logger.error(f"❌ Error ensuring affiliate link exists for ASIN {asin}: {e}")
-        return None
+    """Proxy to the central ensure_affiliate_link_exists implementation in ecommerce_platform.schema.
+    This removes duplicated logic and ensures we leverage the latest safety checks
+    (caching, is_processing state, stuck-task recovery, etc.).
+    """
+    from ecommerce_platform import schema as core_schema
+    return core_schema.ensure_affiliate_link_exists(asin)
 
 def get_amazon_product_by_asin(asin):
     """Find the Amazon product we created for this ASIN"""

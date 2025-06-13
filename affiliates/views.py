@@ -224,6 +224,12 @@ def standalone_callback(request, task_id):
             
             return HttpResponse("Task not found", status=404)
         
+        # Check for existing placeholder product to enrich
+        placeholder_product = Product.objects.filter(part_number=asin, is_placeholder=True).first()
+        if placeholder_product:
+            logger.info(f"🔄 Enriching existing placeholder product {placeholder_product.id} for ASIN {asin}")
+            product = placeholder_product
+        
         # Use affiliate_url as original_url if original_url is not present
         if not original_url:
             logger.warning(f"No original URL found for task_id: {task_id}, using affiliate_url as original_url")
@@ -276,6 +282,8 @@ def standalone_callback(request, task_id):
                 product.description = callback_product_data.get('description', product.description)
                 product.main_image = callback_product_data.get('image', product.main_image)
                 product.slug = slugify(callback_product_data.get('title', product.name))
+                product.is_placeholder = False
+                product.status = 'active'
                 product.save()
                 print(f"✅ UPDATED existing product with real data: {product.name}")
                 
@@ -290,7 +298,8 @@ def standalone_callback(request, task_id):
                         manufacturer=manufacturer,
                         main_image=callback_product_data.get('image', ''),
                         status='active',
-                        source='amazon'
+                        source='amazon',
+                        is_placeholder=False
                     )
                     print(f"✅ Created new product with real data: {product.name}")
                 except Exception as create_error:
@@ -348,7 +357,8 @@ def standalone_callback(request, task_id):
                         manufacturer=manufacturer,
                         main_image=product_data.get('mainImage', ''),
                         status='active',
-                        source='amazon'
+                        source='amazon',
+                        is_placeholder=False
                     )
                     
                     # Save technical details if available
@@ -394,7 +404,8 @@ def standalone_callback(request, task_id):
                         part_number=asin,
                         manufacturer=manufacturer,
                         status='active',
-                        source='amazon'
+                        source='amazon',
+                        is_placeholder=False
                     )
                     print(f"Created fallback product: {product.id} - Part: {asin}")
                 except Exception as fallback_error:
@@ -664,6 +675,7 @@ def search_callback(request):
                     main_image=product_image or '',
                     status='active',
                     source='amazon',
+                    is_placeholder=False,
                     specifications={
                         'original_search_term': original_search_term,
                         'search_type': search_type,

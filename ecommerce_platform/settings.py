@@ -99,6 +99,7 @@ if 'REDISCLOUD_URL' in os.environ:
     # Production settings using Redis Cloud
     print("Using Redis Cloud")
     REDIS_URL = os.environ['REDISCLOUD_URL']
+    print(f"REDISCLOUD_URL found: {REDIS_URL}")
     redis_client = redis.from_url(REDIS_URL)
 
     # Parse the REDISCLOUD_URL
@@ -106,13 +107,13 @@ if 'REDISCLOUD_URL' in os.environ:
     REDIS_HOST = url.hostname
     REDIS_PORT = url.port
     REDIS_DB = url.path[1:]  # Remove the leading '/'
-    # For Q_CLUSTER, the password will be url.password
+    print(f"Parsed Redis Cloud settings - Host: {REDIS_HOST}, Port: {REDIS_PORT}, DB: {REDIS_DB}")
 else:
     # Local development settings
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
     REDIS_DB = int(os.environ.get('REDIS_DB', 0))
-    # 'url' is NOT defined here if this block is executed
+    print(f"Using local Redis settings - Host: {REDIS_HOST}, Port: {REDIS_PORT}, DB: {REDIS_DB}")
     # Get local Redis password if it exists
     local_redis_password = os.environ.get('REDIS_PASSWORD', None)
     redis_client_kwargs = {
@@ -122,8 +123,18 @@ else:
     }
     if local_redis_password:
         redis_client_kwargs['password'] = local_redis_password
+        print("Local Redis password found")
     redis_client = redis.Redis(**redis_client_kwargs)
-    print(f"Using local Redis: {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB}")
+    print(f"Local Redis client initialized with settings: {redis_client_kwargs}")
+
+# Test Redis connection
+try:
+    redis_client.ping()
+    print("Successfully connected to Redis")
+except redis.ConnectionError as e:
+    print(f"Failed to connect to Redis: {str(e)}")
+except Exception as e:
+    print(f"Unexpected error connecting to Redis: {str(e)}")
 
 AUTHENTICATION_BACKENDS = [
     "ecommerce_platform.jwt_debug.DebugJSONWebTokenBackend",  # Our debug backend first
@@ -142,6 +153,7 @@ GRAPHQL_JWT = {
 CORS_URLS_REGEX = r'^/graphql/.*$'
 
 print("Final Redis settings for Q_CLUSTER:", REDIS_HOST, REDIS_PORT, REDIS_DB)
+print(f"Q_CLUSTER Redis password: {'Set' if (url.password if 'REDISCLOUD_URL' in os.environ else local_redis_password) else 'Not set'}")
 
 Q_CLUSTER = {
     'name': 'ecommerce_platform',
@@ -157,13 +169,15 @@ Q_CLUSTER = {
         'host': REDIS_HOST,
         'port': REDIS_PORT,
         'db': REDIS_DB,
-        # Corrected password logic:
         'password': url.password if 'REDISCLOUD_URL' in os.environ else local_redis_password,
     },
     'catch_up': False,
     'sync': False,
-    'django_redis': True, 
+    'django_redis': False,
 }
+
+# Add Q_CLUSTER logging
+print("Q_CLUSTER configuration:", Q_CLUSTER)
 
 TEMPLATES = [
     {

@@ -90,6 +90,9 @@ class Product(models.Model):
     future_demand_count = models.IntegerField(default=0, help_text="Number of times this product was searched for")
     last_demand_date = models.DateTimeField(null=True, blank=True, help_text="Last time someone searched for this product")
 
+    # Indicates a minimal placeholder created before full product data is scraped
+    is_placeholder = models.BooleanField(default=False, db_index=True)
+
     class Meta:
         # Comment out the indexes temporarily
         # indexes = [

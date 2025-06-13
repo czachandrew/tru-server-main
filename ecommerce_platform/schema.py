@@ -257,6 +257,7 @@ class Query(graphene.ObjectType):
         part_number=graphene.String(),
         name=graphene.String(),
         url=graphene.String(),
+        wait_for_affiliate=graphene.Boolean(default_value=False),
         description="Unified search endpoint for Chrome extension"
     )
     
@@ -267,6 +268,7 @@ class Query(graphene.ObjectType):
         partNumber=graphene.String(),
         name=graphene.String(),
         url=graphene.String(),
+        waitForAffiliate=graphene.Boolean(default_value=False),
         description="Unified search endpoint for Chrome extension (camelCase)"
     )
     
@@ -507,6 +509,7 @@ class Query(graphene.ObjectType):
         part_number=graphene.String(),
         name=graphene.String(),
         url=graphene.String(),
+        wait_for_affiliate=graphene.Boolean(default_value=False),
         description="Unified search endpoint for Chrome extension"
     )
     
@@ -517,6 +520,7 @@ class Query(graphene.ObjectType):
         partNumber=graphene.String(),
         name=graphene.String(),
         url=graphene.String(),
+        waitForAffiliate=graphene.Boolean(default_value=False),
         description="Unified search endpoint for Chrome extension (camelCase)"
     )
     
@@ -885,7 +889,7 @@ class Query(graphene.ObjectType):
         debug_logger.info(f"🎯 FALLBACK RESULT: Returning {qs.count()} products")
         return qs
     
-    def resolve_unifiedProductSearch(self, info, asin=None, partNumber=None, name=None, url=None):
+    def resolve_unifiedProductSearch(self, info, asin=None, partNumber=None, name=None, url=None, waitForAffiliate=False):
         """
         UNIFIED MULTI-RETAILER SEARCH (CHROME EXTENSION)
         
@@ -912,10 +916,20 @@ class Query(graphene.ObjectType):
             # PRIORITY 1: ASIN Search (Amazon) - FIXED: Only direct affiliate link creation
             if asin:
                 debug_logger.info(f"🎯 Amazon ASIN Search: {asin} (DIRECT AFFILIATE LINK ONLY)")
+                debug_logger.info(f"🔄 waitForAffiliate: {waitForAffiliate}")
                 
                 # CORE BUSINESS LOGIC: Always ensure affiliate link exists for ASIN
                 affiliate_link = ensure_affiliate_link_exists(asin)
                 debug_logger.info(f"🔗 Affiliate link: {'✅ Found' if affiliate_link and affiliate_link.affiliate_url else '⏳ Pending/Created'}")
+                
+                # NEW: Server-side waiting logic when waitForAffiliate=True
+                if waitForAffiliate and affiliate_link and not affiliate_link.affiliate_url:
+                    debug_logger.info(f"⏳ Waiting for affiliate link completion...")
+                    affiliate_link, completed = wait_for_affiliate_completion(asin, timeout_seconds=30)
+                    if completed:
+                        debug_logger.info(f"✅ Affiliate link completed during wait")
+                    else:
+                        debug_logger.warning(f"⏰ Affiliate link generation timed out")
                 
                 # Try to find existing Amazon product for this ASIN
                 amazon_product = get_amazon_product_by_asin(asin)
@@ -942,7 +956,10 @@ class Query(graphene.ObjectType):
                         relationship_category="amazon_affiliate",
                         margin_opportunity="affiliate_only",
                         revenue_type="affiliate_commission",
-                        affiliate_links=[affiliate_link] if affiliate_link else []
+                        affiliate_links=[affiliate_link] if affiliate_link else [],
+                        needs_affiliate_generation=(affiliate_link and not affiliate_link.affiliate_url),
+                        is_placeholder=getattr(amazon_product, 'is_placeholder', False),
+                        task_id=None
                     )
                     result._source_product = amazon_product
                     results.append(result)
@@ -965,7 +982,10 @@ class Query(graphene.ObjectType):
                         relationship_category="amazon_affiliate",
                         margin_opportunity="affiliate_only",
                         revenue_type="affiliate_commission",
-                        affiliate_links=[affiliate_link] if affiliate_link else []
+                        affiliate_links=[affiliate_link] if affiliate_link else [],
+                        needs_affiliate_generation=True,
+                        is_placeholder=True,
+                        task_id=None
                     )
                     results.append(result)
                     debug_logger.info(f"📝 Created placeholder Amazon product for ASIN: {asin}")
@@ -1021,7 +1041,7 @@ class Query(graphene.ObjectType):
                 import re
                 if re.match(r'^B[A-Z0-9]{9}$', partNumber):
                     debug_logger.info(f"🧠 DETECTED: partNumber '{partNumber}' is actually an ASIN! Redirecting to ASIN flow...")
-                    return self.resolve_unifiedProductSearch(info, asin=partNumber, name=name, url=url)
+                    return self.resolve_unifiedProductSearch(info, asin=partNumber, name=name, url=url, waitForAffiliate=waitForAffiliate)
                 
                 return Query._handle_non_amazon_product_search_static(partNumber=partNumber, name=name)
             
@@ -1041,7 +1061,7 @@ class Query(graphene.ObjectType):
                 if asin_match:
                     extracted_asin = asin_match.group(1)
                     debug_logger.info(f"🔍 Extracted Amazon ASIN from URL: {extracted_asin}")
-                    return self.resolve_unifiedProductSearch(info, asin=extracted_asin)
+                    return self.resolve_unifiedProductSearch(info, asin=extracted_asin, waitForAffiliate=waitForAffiliate)
                 
                 debug_logger.info(f"⚠️  Could not extract product ID from URL: {url}")
                 return []
@@ -2662,6 +2682,23 @@ class ProductSearchResult(graphene.ObjectType):
     matchConfidence = graphene.Float()
     productUrl = graphene.String()
     imageUrl = graphene.String()
+    
+    # Affiliate-generation workflow flags
+    needs_affiliate_generation = graphene.Boolean()
+    task_id = graphene.String()
+    is_placeholder = graphene.Boolean()
+    
+    # CamelCase aliases for frontend compatibility
+    needsAffiliateGeneration = graphene.Boolean()
+    taskId = graphene.String()
+    isPlaceholder = graphene.Boolean()
+    
+    # Resolvers for camelCase aliases
+    def resolve_needsAffiliateGeneration(self, info):
+        return getattr(self, 'needs_affiliate_generation', None)
+    
+    def resolve_taskId(self, info):
+        return getattr(self, 'task_id', None)
 
     def resolve_partNumber(self, info):
         return self.part_number
@@ -2774,6 +2811,9 @@ class ProductSearchResult(graphene.ObjectType):
             return list(AffiliateLinkModel.objects.filter(product=self._source_product))
         
         return []
+
+    def resolve_isPlaceholder(self, info):
+        return getattr(self, 'is_placeholder', False)
 
 def get_redis_connection():
     """Helper to get standardized Redis connection kwargs"""
@@ -3030,37 +3070,67 @@ def score_and_select_best_match(search_text, candidates):
     return None
 
 def handle_affiliate_link_for_asin(product, asin, url):
-    """Handle affiliate link creation/retrieval for a product and ASIN"""
+    """
+    Handle affiliate link creation for a product with an ASIN
+    """
+    # Check if we already have an affiliate link for this ASIN
+    existing_link = AffiliateLinkModel.objects.filter(
+        product=product,
+        platform='amazon',
+        platform_id=asin
+    ).first()
+    
+    if existing_link:
+        debug_logger.info(f"🔗 Found existing affiliate link for ASIN {asin}: {existing_link.affiliate_url}")
+        return existing_link
+    
+    # Create new affiliate link
+    debug_logger.info(f"🆕 Creating new affiliate link for ASIN {asin}")
+    affiliate_link = AffiliateLinkModel.objects.create(
+        product=product,
+        platform='amazon',
+        platform_id=asin,
+        original_url=url or f"https://amazon.com/dp/{asin}",
+        affiliate_url='',  # Will be populated by background task
+        is_active=True
+    )
+    
+    # Queue background task to generate the affiliate URL
     try:
-        # Try to find existing affiliate link
-        affiliate_link = AffiliateLinkModel.objects.get(
-            product=product,
+        task_result = async_task('affiliates.tasks.generate_amazon_affiliate_url', asin)
+        debug_logger.info(f"🚀 Queued affiliate task: {task_result}")
+    except Exception as e:
+        debug_logger.error(f"❌ Failed to queue affiliate task: {e}")
+    
+    return affiliate_link
+
+def wait_for_affiliate_completion(asin, timeout_seconds=30):
+    """
+    Wait for affiliate link generation to complete, with timeout.
+    Returns (affiliate_link, completed) tuple.
+    """
+    import time
+    from django.utils import timezone
+    
+    start_time = time.time()
+    debug_logger.info(f"⏳ Waiting up to {timeout_seconds}s for affiliate link completion: {asin}")
+    
+    while time.time() - start_time < timeout_seconds:
+        # Check if affiliate link is complete
+        affiliate_link = AffiliateLinkModel.objects.filter(
             platform='amazon',
             platform_id=asin
-        )
-        debug_logger.info(f"🔗 Found existing affiliate link: {affiliate_link.id}")
-        return affiliate_link
+        ).first()
         
-    except AffiliateLinkModel.DoesNotExist:
-        # Create new affiliate link
-        debug_logger.info(f"🔗 Creating new affiliate link for ASIN: {asin}")
+        if affiliate_link and affiliate_link.affiliate_url and affiliate_link.affiliate_url.strip():
+            debug_logger.info(f"✅ Affiliate link completed in {time.time() - start_time:.1f}s: {affiliate_link.affiliate_url[:50]}...")
+            return affiliate_link, True
         
-        affiliate_link = AffiliateLinkModel(
-            product=product,
-            platform='amazon',
-            platform_id=asin,
-            original_url=url or f"https://www.amazon.com/dp/{asin}",
-            affiliate_url='',  # Will be populated by background task
-            is_active=True
-        )
-        affiliate_link.save()
-        
-        # Queue background task to generate actual affiliate URL
-        task_result = async_task('affiliates.tasks.generate_amazon_affiliate_url', 
-                      affiliate_link.id, asin)
-        
-        debug_logger.info(f"🚀 Queued affiliate task: {task_result}")
-        return affiliate_link
+        # Wait a bit before checking again
+        time.sleep(0.5)
+    
+    debug_logger.warning(f"⏰ Affiliate link generation timed out after {timeout_seconds}s for ASIN: {asin}")
+    return affiliate_link if 'affiliate_link' in locals() else None, False
 
 # Helper functions for ASIN search
 def ensure_affiliate_link_exists(asin):
@@ -3146,12 +3216,27 @@ def ensure_affiliate_link_exists(asin):
                 placeholder_product = ProductModel.objects.get(part_number=asin)
                 debug_logger.info(f"📦 Found existing placeholder product for ASIN {asin}")
             except ProductModel.DoesNotExist:
-                # Create a basic placeholder product
+                # Create a basic placeholder product. Manufacturer is required so ensure an "Amazon" manufacturer exists.
+                from django.utils.text import slugify
+                from products.models import Manufacturer as ManufacturerModel
+
+                amazon_manufacturer, _ = ManufacturerModel.objects.get_or_create(
+                    name="Amazon",
+                    defaults={
+                        "slug": "amazon",
+                        "website": "https://www.amazon.com"
+                    }
+                )
+
                 placeholder_product = ProductModel.objects.create(
                     name=f"Amazon Product {asin}",
+                    slug=f"amazon-product-{asin.lower()}",
                     part_number=asin,
                     description=f"Amazon product with ASIN {asin}",
-                    status='active'
+                    manufacturer=amazon_manufacturer,
+                    status='pending',
+                    source='amazon',
+                    is_placeholder=True
                 )
                 debug_logger.info(f"📦 Created placeholder product {placeholder_product.id} for ASIN {asin}")
             
@@ -3162,8 +3247,7 @@ def ensure_affiliate_link_exists(asin):
                 original_url=f"https://amazon.com/dp/{asin}",
                 affiliate_url='',  # Will be populated by task
                 is_active=True,
-                is_processing=True,  # Mark as processing immediately
-                processing_started_at=timezone.now()
+                is_processing=False  # Let the background task set processing state
             )
             debug_logger.info(f"📝 CREATED: New affiliate link {existing_link.id} for ASIN {asin}")
         except Exception as e:
@@ -3208,13 +3292,13 @@ def get_amazon_product_by_asin(asin):
     ).select_related('product').first()
     
     if affiliate_link and affiliate_link.product:
-        debug_logger.info(f"📦 Found Amazon product via affiliate link: {affiliate_link.product.name}")
+        debug_logger.info(f"📦 Found Amazon product via affiliate link: {affiliate_link.product.name} (placeholder={affiliate_link.product.is_placeholder})")
         return affiliate_link.product
     
     # Method 2: Look for product with ASIN as part number (fallback)
     try:
         product = ProductModel.objects.get(part_number=asin)
-        debug_logger.info(f"📦 Found Amazon product via part number: {product.name}")
+        debug_logger.info(f"📦 Found Amazon product via part number: {product.name} (placeholder={product.is_placeholder})")
         return product
     except ProductModel.DoesNotExist:
         pass
@@ -3225,7 +3309,7 @@ def get_amazon_product_by_asin(asin):
     ).first()
     
     if products_with_asin:
-        debug_logger.info(f"📦 Found Amazon product via name/description: {products_with_asin.name}")
+        debug_logger.info(f"📦 Found Amazon product via name/description: {products_with_asin.name} (placeholder={products_with_asin.is_placeholder})")
         return products_with_asin
     
     debug_logger.warning(f"❌ No Amazon product found for ASIN: {asin}")
