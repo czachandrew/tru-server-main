@@ -1020,7 +1020,8 @@ class Query(graphene.ObjectType):
                 try:
                     if name:
                         debug_logger.info(f"🎯 Searching for relevant accessories for: {name}")
-                        accessory_results = Query._find_relevant_accessories_for_product_static(name)
+                        # Temporarily disable to prevent memory issues
+                        accessory_results = []  # Query._find_relevant_accessories_for_product_static(name)
                         
                         for accessory in accessory_results:
                             results.append(accessory)
@@ -1125,7 +1126,8 @@ class Query(graphene.ObjectType):
             results.extend(amazon_results)
         
         # STEP 3: Find Relevant Accessories (Cross-sell Opportunities)
-        accessory_results = Query._find_relevant_accessories_for_product_static(name or partNumber)
+        # Temporarily disable to prevent memory issues
+        accessory_results = []  # Query._find_relevant_accessories_for_product_static(name or partNumber)
         results.extend(accessory_results)
         
         # STEP 4: Create Product Record for Future (Background task)
@@ -1565,13 +1567,20 @@ class Query(graphene.ObjectType):
             accessory_searches = ['cable', 'adapter']
         
         # Search for each accessory type
-        for accessory_term in accessory_searches[:3]:  # Limit to top 3 types
+        for accessory_term in accessory_searches[:2]:  # Limit to top 2 types to reduce memory usage
             try:
+                # Add more restrictive query to prevent memory issues
                 accessories = ProductModel.objects.filter(
                     Q(name__icontains=accessory_term) | Q(description__icontains=accessory_term)
-                ).select_related('manufacturer')[:2]  # 2 per type
+                ).select_related('manufacturer').only(
+                    'id', 'name', 'part_number', 'description', 'main_image', 'manufacturer'
+                )[:1]  # Reduce to 1 per type to prevent memory issues
                 
                 for accessory in accessories:
+                    # Limit related queries to prevent memory issues
+                    offers = list(OfferModel.objects.filter(product=accessory).select_related('vendor')[:2])
+                    affiliate_links = list(AffiliateLinkModel.objects.filter(product=accessory)[:2])
+                    
                     result = ProductSearchResult(
                         id=accessory.id,
                         name=accessory.name,
@@ -1587,14 +1596,15 @@ class Query(graphene.ObjectType):
                         relationship_category=f"{accessory_term.replace(' ', '_')}_accessory",
                         margin_opportunity="high",
                         revenue_type="cross_sell_opportunity",
-                        offers=list(OfferModel.objects.filter(product=accessory).select_related('vendor')),
-                        affiliate_links=list(AffiliateLinkModel.objects.filter(product=accessory))
+                        offers=offers,
+                        affiliate_links=affiliate_links
                     )
                     result._source_product = accessory
                     results.append(result)
                     
             except Exception as e:
                 debug_logger.error(f"❌ Accessory search error for '{accessory_term}': {e}")
+                # Continue with other accessory types even if one fails
         
         debug_logger.info(f"🎯 Found {len(results)} relevant accessories")
         return results
