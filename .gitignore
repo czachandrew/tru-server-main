@@ -59,6 +59,8 @@ coverage.xml
 # Translations
 *.mo
 *.pot
+*.ap
+*.zip
 
 # IDE specific files
 .idea/
