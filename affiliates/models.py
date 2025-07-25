@@ -1,5 +1,8 @@
 from django.db import models
 from products.models import Product
+from django.utils import timezone
+import logging
+logger = logging.getLogger('affiliate_tasks')
 
 PLATFORM_CHOICES = [
     ('amazon', 'Amazon'),
@@ -285,3 +288,350 @@ class ProductAssociation(models.Model):
         if self.click_count == 0:
             return 0.0
         return (self.conversion_count / self.click_count) * 100
+
+class AffiliateClickEvent(models.Model):
+    """Track affiliate link clicks detected by the browser extension"""
+    
+    CLICK_SOURCES = [
+        ('extension', 'Browser Extension'),
+        ('website', 'Website Direct'),
+        ('email', 'Email Campaign'),
+        ('social', 'Social Media'),
+        ('other', 'Other'),
+    ]
+    
+    # User and affiliate link reference
+    user = models.ForeignKey(
+        'users.User',
+        on_delete=models.CASCADE,
+        related_name='affiliate_clicks',
+        help_text="User who clicked the affiliate link"
+    )
+    
+    affiliate_link = models.ForeignKey(
+        'AffiliateLink',
+        on_delete=models.CASCADE,
+        related_name='click_events',
+        help_text="Affiliate link that was clicked"
+    )
+    
+    # Click details
+    source = models.CharField(
+        max_length=20,
+        choices=CLICK_SOURCES,
+        default='extension',
+        help_text="Source of the click (extension, website, etc.)"
+    )
+    
+    # Extension-provided data
+    session_id = models.CharField(
+        max_length=100,
+        help_text="Extension-generated session ID for tracking"
+    )
+    
+    referrer_url = models.TextField(
+        blank=True,
+        help_text="URL where the user was when they clicked"
+    )
+    
+    target_domain = models.CharField(
+        max_length=100,
+        help_text="Domain user was redirected to (amazon.com, ebay.com, etc.)"
+    )
+    
+    # Product context
+    product_data = models.JSONField(
+        default=dict,
+        help_text="Product details as detected by extension"
+    )
+    
+    # Browser/device context
+    user_agent = models.TextField(blank=True)
+    browser_fingerprint = models.CharField(max_length=100, blank=True)
+    
+    # Tracking metadata
+    clicked_at = models.DateTimeField(auto_now_add=True)
+    
+    # Session tracking
+    session_duration = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Time spent on target site in seconds"
+    )
+    
+    session_ended_at = models.DateTimeField(null=True, blank=True)
+    
+    # Status
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this click is still being tracked"
+    )
+    
+    class Meta:
+        ordering = ['-clicked_at']
+        indexes = [
+            models.Index(fields=['user', 'clicked_at']),
+            models.Index(fields=['affiliate_link', 'clicked_at']),
+            models.Index(fields=['session_id']),
+            models.Index(fields=['target_domain']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.email} clicked {self.affiliate_link} at {self.clicked_at}"
+    
+    def update_session_duration(self, duration_seconds):
+        """Update session duration when extension reports it"""
+        self.session_duration = duration_seconds
+        self.session_ended_at = self.clicked_at + timezone.timedelta(seconds=duration_seconds)
+        self.save(update_fields=['session_duration', 'session_ended_at'])
+
+
+class PurchaseIntentEvent(models.Model):
+    """Track purchase intent detected by the browser extension"""
+    
+    INTENT_STAGES = [
+        ('cart_add', 'Added to Cart'),
+        ('cart_view', 'Viewing Cart'),
+        ('shipping_info', 'Entered Shipping Info'),
+        ('payment_page', 'Reached Payment Page'),
+        ('payment_info', 'Entered Payment Info'),
+        ('order_review', 'Order Review'),
+        ('order_submit', 'Order Submitted'),
+        ('order_confirmed', 'Order Confirmed'),
+    ]
+    
+    CONFIDENCE_LEVELS = [
+        ('LOW', 'Low (30-50%)'),
+        ('MEDIUM', 'Medium (50-70%)'),
+        ('HIGH', 'High (70-90%)'),
+        ('VERY_HIGH', 'Very High (90%+)'),
+    ]
+    
+    # Related click event
+    click_event = models.ForeignKey(
+        'AffiliateClickEvent',
+        on_delete=models.CASCADE,
+        related_name='purchase_intents',
+        help_text="Original click event that led to this purchase intent"
+    )
+    
+    # Purchase details
+    intent_stage = models.CharField(
+        max_length=20,
+        choices=INTENT_STAGES,
+        help_text="Stage of purchase process detected"
+    )
+    
+    confidence_level = models.CharField(
+        max_length=10,
+        choices=CONFIDENCE_LEVELS,
+        help_text="Confidence level of purchase intent"
+    )
+    
+    confidence_score = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        help_text="Numerical confidence score (0.00-1.00)"
+    )
+    
+    # Cart/order details
+    cart_total = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Total cart value if detected"
+    )
+    
+    cart_items = models.JSONField(
+        default=list,
+        help_text="List of items in cart as detected by extension"
+    )
+    
+    # Product matching
+    matched_products = models.JSONField(
+        default=list,
+        help_text="Products that match original affiliate link"
+    )
+    
+    # Page context
+    page_url = models.TextField(help_text="URL where intent was detected")
+    page_title = models.CharField(max_length=255, blank=True)
+    
+    # Timestamps
+    detected_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    # Processing status
+    has_created_projection = models.BooleanField(
+        default=False,
+        help_text="Whether a projected earning was created for this intent"
+    )
+    
+    projected_transaction = models.OneToOneField(
+        'users.WalletTransaction',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='purchase_intent',
+        help_text="Projected wallet transaction created from this intent"
+    )
+    
+    class Meta:
+        ordering = ['-detected_at']
+        indexes = [
+            models.Index(fields=['click_event', 'detected_at']),
+            models.Index(fields=['intent_stage', 'confidence_level']),
+            models.Index(fields=['has_created_projection']),
+            models.Index(fields=['detected_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.click_event.user.email} - {self.intent_stage} ({self.confidence_level})"
+    
+    @property
+    def user(self):
+        """Get user from related click event"""
+        return self.click_event.user
+    
+    @property
+    def affiliate_link(self):
+        """Get affiliate link from related click event"""
+        return self.click_event.affiliate_link
+    
+    def should_create_projection(self):
+        """Determine if this intent should create a projected earning"""
+        # Only create projections for medium confidence or higher
+        if self.confidence_level in ['MEDIUM', 'HIGH', 'VERY_HIGH']:
+            return True
+        
+        # Or if user has high historical conversion rate
+        user_conversion_rate = self.calculate_user_conversion_rate()
+        if user_conversion_rate > 0.3:  # 30% historical conversion rate
+            return True
+        
+        return False
+    
+    def calculate_user_conversion_rate(self):
+        """Calculate user's historical conversion rate"""
+        # This would be implemented based on historical data
+        # For now, return a default value
+        return 0.2  # 20% default conversion rate
+    
+    def calculate_projected_commission(self):
+        """Calculate projected commission amount for affiliate links"""
+        from decimal import Decimal
+        import json
+        affiliate_link = self.affiliate_link
+
+        # 1. Try to get price from product_data (extension)
+        price = None
+        pd = getattr(self, 'product_data', None)
+        logger.info(f"[CommissionCalc] Raw product_data: {pd}")
+        if pd:
+            if isinstance(pd, str):
+                try:
+                    pd = json.loads(pd)
+                except Exception:
+                    pd = {}
+            price = pd.get('price')
+            if price:
+                try:
+                    price = Decimal(str(price))
+                except Exception:
+                    logger.warning(f"[CommissionCalc] Could not convert price '{price}' to Decimal.")
+                    price = None
+        
+        # 2. Fallback to offer's selling_price
+        offer = affiliate_link.product.offers.filter(is_active=True).order_by('-selling_price').first()
+        if not price and offer and hasattr(offer, 'selling_price') and offer.selling_price:
+            price = Decimal(str(offer.selling_price))
+            logger.info(f"[CommissionCalc] Using offer selling_price: {price}")
+        if not price:
+            logger.error(f"[CommissionCalc] No price found for PurchaseIntentEvent {self.id}. Cannot calculate commission.")
+            raise ValueError(f"No price found for PurchaseIntentEvent {self.id} (product: {affiliate_link.product.id})")
+
+        # 3. Use commission rate: affiliate link > offer > default 2%
+        commission_rate = affiliate_link.commission_rate
+        if commission_rate is None and offer and getattr(offer, 'commission_rate', None):
+            commission_rate = Decimal(str(offer.commission_rate))
+            logger.info(f"[CommissionCalc] Using offer commission_rate: {commission_rate}")
+        elif commission_rate is None:
+            commission_rate = Decimal('0.02')  # 2% default
+            logger.warning(f"[CommissionCalc] No commission_rate found, defaulting to 2% for PurchaseIntentEvent {self.id}")
+        else:
+            commission_rate = Decimal(str(commission_rate))
+
+        commission_amount = price * (commission_rate / Decimal('100'))
+
+        # 4. Apply user's revenue share rate
+        user_share_rate = self.user.profile.revenue_share_rate
+        logger.info(f"[CommissionCalc] User share rate: {user_share_rate}")
+        commission_amount = commission_amount * user_share_rate
+
+        logger.info(
+            f"[CommissionCalc] Commission calculation for PurchaseIntentEvent {self.id}: "
+            f"price={price}, commission_rate={commission_rate}, "
+            f"user_share_rate={user_share_rate}, commission_amount={commission_amount}"
+        )
+
+        # 5. Round to 2 decimal places
+        return commission_amount.quantize(Decimal('0.01'))
+    
+    def create_projected_earning(self):
+        print(f"[DEBUG] create_projected_earning called for PurchaseIntentEvent {self.id} (intent_stage={self.intent_stage})")
+        from users.models import WalletTransaction
+
+        if self.intent_stage != 'cart_view':
+            print(f"[DEBUG] Skipping: intent_stage is {self.intent_stage}, not 'cart_view'.")
+            return None
+
+        if self.has_created_projection or WalletTransaction.objects.filter(
+            user=self.user,
+            affiliate_link=self.affiliate_link,
+            transaction_type='EARNING_PROJECTED',
+            metadata__purchase_intent_id=self.id
+        ).exists():
+            print(f"[DEBUG] Skipping: already has created projection for PurchaseIntentEvent {self.id}.")
+            return self.projected_transaction
+
+        if not self.should_create_projection():
+            print(f"[DEBUG] Skipping: should_create_projection() returned False for {self.id}.")
+            return None
+
+        try:
+            projected_amount = self.calculate_projected_commission()
+        except Exception as e:
+            print(f"[DEBUG] Failed to calculate commission: {e}")
+            raise
+
+        print(f"[DEBUG] Creating WalletTransaction for user {self.user.id} with amount {projected_amount}")
+
+        transaction = WalletTransaction.objects.create(
+            user=self.user,
+            transaction_type='EARNING_PROJECTED',
+            amount=projected_amount,
+            balance_before=self.user.profile.pending_balance,
+            balance_after=self.user.profile.pending_balance + projected_amount,
+            affiliate_link=self.affiliate_link,
+            description=f"Projected earning from {self.intent_stage} on {self.affiliate_link.platform}",
+            metadata={
+                'purchase_intent_id': self.id,
+                'confidence_level': self.confidence_level,
+                'confidence_score': float(self.confidence_score),
+                'intent_stage': self.intent_stage,
+                'cart_total': float(self.cart_total) if self.cart_total else None,
+                'detection_method': 'extension_checkout_detection',
+            }
+        )
+
+        self.user.profile.pending_balance += projected_amount
+        self.user.profile.save(update_fields=['pending_balance'])
+
+        self.projected_transaction = transaction
+        self.has_created_projection = True
+        self.save(update_fields=['projected_transaction', 'has_created_projection'])
+
+        print(f"[DEBUG] WalletTransaction {transaction.id} created for user {self.user.id} (amount={projected_amount})")
+
+        return transaction

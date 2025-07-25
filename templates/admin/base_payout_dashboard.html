@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Payout Management Dashboard{% endblock %}</title>
+    
+    <!-- Django Admin CSS -->
+    <link rel="stylesheet" type="text/css" href="{% load static %}{% static 'admin/css/base.css' %}">
+    <link rel="stylesheet" type="text/css" href="{% load static %}{% static 'admin/css/dashboard.css' %}">
+    
+    <style>
+        .dashboard-nav {
+            background: #f8f9fa;
+            padding: 10px 20px;
+            border-bottom: 1px solid #ddd;
+            margin-bottom: 20px;
+        }
+        .dashboard-nav a {
+            display: inline-block;
+            padding: 8px 16px;
+            margin-right: 10px;
+            background: #007cba;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .dashboard-nav a:hover {
+            background: #005a87;
+        }
+        .dashboard-nav a.active {
+            background: #0c4b5c;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            color: #007cba;
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .urgent { color: #d32f2f; }
+        .warning { color: #f57c00; }
+        .success { color: #388e3c; }
+        .info { color: #1976d2; }
+        
+        .payout-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+        }
+        .payout-table th, .payout-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .payout-table th {
+            background: #f8f9fa;
+            font-weight: bold;
+        }
+        .payout-table tr:hover {
+            background: #f5f5f5;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+        .action-btn {
+            padding: 4px 8px;
+            border: 1px solid;
+            border-radius: 3px;
+            text-decoration: none;
+            font-size: 0.8em;
+            cursor: pointer;
+        }
+        .btn-approve { color: green; border-color: green; }
+        .btn-reject { color: red; border-color: red; }
+        .btn-process { color: blue; border-color: blue; }
+        .btn-retry { color: orange; border-color: orange; }
+        
+        .filters {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .filters form {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .filters select, .filters input {
+            padding: 5px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .filters button {
+            padding: 6px 12px;
+            background: #007cba;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .alert {
+            padding: 10px 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+        .alert-info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .alert-warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        .alert-danger { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    </style>
+    
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <div id="header">
+        <div id="branding">
+            <h1 id="site-name">
+                <a href="/admin/">Ecommerce Platform Administration</a> › 
+                <a href="{% url 'users:payout_queue_dashboard' %}">Payout Management</a>
+            </h1>
+        </div>
+    </div>
+    
+    <div class="dashboard-nav">
+        <a href="{% url 'users:payout_queue_dashboard' %}" 
+           class="{% if request.resolver_match.url_name == 'payout_queue_dashboard' %}active{% endif %}">
+           📊 Payout Queue
+        </a>
+        <a href="{% url 'users:payout_eligibility_checker' %}" 
+           class="{% if request.resolver_match.url_name == 'payout_eligibility_checker' %}active{% endif %}">
+           ✅ Eligibility Checker
+        </a>
+        <a href="{% url 'users:batch_payout_processor' %}" 
+           class="{% if request.resolver_match.url_name == 'batch_payout_processor' %}active{% endif %}">
+           ⚡ Batch Processor
+        </a>
+        <a href="{% url 'users:payout_analytics_dashboard' %}" 
+           class="{% if request.resolver_match.url_name == 'payout_analytics_dashboard' %}active{% endif %}">
+           📈 Analytics
+        </a>
+        <a href="/admin/users/payoutrequest/">🔧 Admin View</a>
+    </div>
+    
+    <div class="main" style="padding: 0 20px;">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+        
+        {% block content %}{% endblock %}
+    </div>
+    
+    <script src="{% load static %}{% static 'admin/js/vendor/jquery/jquery.js' %}"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html> 

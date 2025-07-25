@@ -1043,7 +1043,7 @@ def ensure_affiliate_link_exists(asin):
     This removes duplicated logic and ensures we leverage the latest safety checks
     (caching, is_processing state, stuck-task recovery, etc.).
     """
-    from ecommerce_platform import schema as core_schema
+    from ecommerce_platform.schema import schema as core_schema
     return core_schema.ensure_affiliate_link_exists(asin)
 
 def get_amazon_product_by_asin(asin):

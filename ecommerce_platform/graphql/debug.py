@@ -1,6 +1,6 @@
 # Create this file for debugging
 import json
-from .schema import schema
+from .schema_future import schema
 
 def print_schema():
     """Print the full GraphQL schema to help debug missing fields"""

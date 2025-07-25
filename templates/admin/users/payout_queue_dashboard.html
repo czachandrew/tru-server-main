@@ -1,0 +1,265 @@
+{% extends "admin/base_payout_dashboard.html" %}
+{% load static %}
+
+{% block title %}Payout Queue Dashboard{% endblock %}
+
+{% block content %}
+<div class="dashboard-content">
+    <h1>📊 Payout Queue Dashboard</h1>
+    
+    <!-- Summary Statistics -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-number urgent">{{ stats.total_pending }}</div>
+            <div class="stat-label">Pending Approval</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number info">{{ stats.total_approved }}</div>
+            <div class="stat-label">Approved</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number warning">{{ stats.total_processing }}</div>
+            <div class="stat-label">Processing</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number success">{{ stats.total_completed_today }}</div>
+            <div class="stat-label">Completed Today</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${{ stats.amount_pending }}</div>
+            <div class="stat-label">Total Pending Amount</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number success">${{ stats.amount_completed_week }}</div>
+            <div class="stat-label">Completed This Week</div>
+        </div>
+    </div>
+    
+    <!-- Alerts -->
+    {% if urgent_payouts > 0 %}
+        <div class="alert alert-warning">
+            <strong>⚠️ Urgent:</strong> {{ urgent_payouts }} payout{{ urgent_payouts|pluralize }} 
+            pending for more than 7 days and need immediate attention.
+        </div>
+    {% endif %}
+    
+    {% if pending_eligibility > 0 %}
+        <div class="alert alert-info">
+            <strong>📋 Notice:</strong> {{ pending_eligibility }} user{{ pending_eligibility|pluralize }} 
+            need eligibility review. <a href="{% url 'users:payout_eligibility_checker' %}">Review now</a>
+        </div>
+    {% endif %}
+    
+    <!-- Filters -->
+    <div class="filters">
+        <form method="get">
+            <label>Status:</label>
+            <select name="status">
+                <option value="all" {% if filters.status == 'all' %}selected{% endif %}>All</option>
+                {% for value, label in status_choices %}
+                    <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            
+            <label>Priority:</label>
+            <select name="priority">
+                <option value="all" {% if filters.priority == 'all' %}selected{% endif %}>All</option>
+                {% for value, label in priority_choices %}
+                    <option value="{{ value }}" {% if filters.priority == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            
+            <label>Method:</label>
+            <select name="method">
+                <option value="all" {% if filters.method == 'all' %}selected{% endif %}>All</option>
+                {% for value, label in method_choices %}
+                    <option value="{{ value }}" {% if filters.method == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            
+            <label>Days:</label>
+            <select name="days">
+                <option value="all" {% if filters.days == 'all' %}selected{% endif %}>All Time</option>
+                <option value="1" {% if filters.days == '1' %}selected{% endif %}>Last 24 Hours</option>
+                <option value="7" {% if filters.days == '7' %}selected{% endif %}>Last 7 Days</option>
+                <option value="30" {% if filters.days == '30' %}selected{% endif %}>Last 30 Days</option>
+            </select>
+            
+            <button type="submit">Filter</button>
+            <a href="{% url 'users:payout_queue_dashboard' %}" style="margin-left: 10px;">Clear</a>
+        </form>
+    </div>
+    
+    <!-- Payout List -->
+    <div class="payout-list">
+        <h2>Payout Requests ({{ payout_list.paginator.count }} total)</h2>
+        
+        {% if payout_list %}
+            <table class="payout-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>User</th>
+                        <th>Amount</th>
+                        <th>Method</th>
+                        <th>Status</th>
+                        <th>Priority</th>
+                        <th>Days Pending</th>
+                        <th>Requested</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for payout in payout_list %}
+                        <tr>
+                            <td><strong>#{{ payout.id }}</strong></td>
+                            <td>
+                                <a href="/admin/users/userprofile/{{ payout.user.profile.id }}/change/" target="_blank">
+                                    {{ payout.user.email }}
+                                </a>
+                            </td>
+                            <td>
+                                <span style="color: {% if payout.status == 'completed' %}green{% elif payout.status in 'failed,rejected' %}red{% else %}black{% endif %}; font-weight: bold;">
+                                    ${{ payout.amount }}
+                                </span>
+                            </td>
+                            <td>
+                                {% if payout.payout_method == 'stripe_bank' %}🏦 Stripe
+                                {% elif payout.payout_method == 'paypal' %}💳 PayPal
+                                {% elif payout.payout_method == 'check' %}📄 Check
+                                {% else %}❓ {{ payout.get_payout_method_display }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if payout.status == 'pending' %}
+                                    <span style="color: orange;">⏳ Pending</span>
+                                {% elif payout.status == 'approved' %}
+                                    <span style="color: blue;">✅ Approved</span>
+                                {% elif payout.status == 'processing' %}
+                                    <span style="color: purple;">⚙️ Processing</span>
+                                {% elif payout.status == 'completed' %}
+                                    <span style="color: green;">✅ Completed</span>
+                                {% elif payout.status == 'failed' %}
+                                    <span style="color: red;">❌ Failed</span>
+                                {% elif payout.status == 'rejected' %}
+                                    <span style="color: red;">❌ Rejected</span>
+                                {% else %}
+                                    {{ payout.get_status_display }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if payout.priority == 'high' %}
+                                    <span style="color: red;">🔴 High</span>
+                                {% elif payout.priority == 'urgent' %}
+                                    <span style="color: darkred;">🚨 Urgent</span>
+                                {% else %}
+                                    {{ payout.get_priority_display }}
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% with days=payout.days_pending %}
+                                    <span style="color: {% if days >= 7 %}red{% elif days >= 3 %}orange{% else %}green{% endif %};">
+                                        {{ days }} day{{ days|pluralize }}
+                                    </span>
+                                {% endwith %}
+                            </td>
+                            <td>{{ payout.requested_at|date:"M d, H:i" }}</td>
+                            <td>
+                                <div class="action-buttons">
+                                    {% if payout.status == 'pending' %}
+                                        <button class="action-btn btn-approve" onclick="performAction({{ payout.id }}, 'approve')">
+                                            ✅ Approve
+                                        </button>
+                                        <button class="action-btn btn-reject" onclick="performAction({{ payout.id }}, 'reject')">
+                                            ❌ Reject
+                                        </button>
+                                    {% elif payout.status == 'approved' %}
+                                        <button class="action-btn btn-process" onclick="performAction({{ payout.id }}, 'process')">
+                                            ⚙️ Process
+                                        </button>
+                                    {% elif payout.status == 'failed' and payout.can_retry %}
+                                        <button class="action-btn btn-retry" onclick="performAction({{ payout.id }}, 'retry')">
+                                            🔄 Retry
+                                        </button>
+                                    {% endif %}
+                                    
+                                    <a href="/admin/users/payoutrequest/{{ payout.id }}/change/" 
+                                       class="action-btn" target="_blank">🔧 Edit</a>
+                                </div>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            
+            <!-- Pagination -->
+            {% if payout_list.has_other_pages %}
+                <div class="pagination" style="margin-top: 20px;">
+                    {% if payout_list.has_previous %}
+                        <a href="?page={{ payout_list.previous_page_number }}&{{ request.GET.urlencode }}">&laquo; Previous</a>
+                    {% endif %}
+                    
+                    <span class="current">
+                        Page {{ payout_list.number }} of {{ payout_list.paginator.num_pages }}
+                    </span>
+                    
+                    {% if payout_list.has_next %}
+                        <a href="?page={{ payout_list.next_page_number }}&{{ request.GET.urlencode }}">Next &raquo;</a>
+                    {% endif %}
+                </div>
+            {% endif %}
+        {% else %}
+            <div class="alert alert-info">
+                <strong>📭 No payout requests found</strong> matching your current filters.
+            </div>
+        {% endif %}
+    </div>
+    
+    <!-- Quick Actions -->
+    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+        <h3>Quick Actions</h3>
+        <a href="{% url 'users:batch_payout_processor' %}" class="action-btn" style="background: #007cba; color: white; padding: 10px 20px;">
+            ⚡ Batch Process Payouts
+        </a>
+        <a href="{% url 'users:payout_analytics_dashboard' %}" class="action-btn" style="background: #28a745; color: white; padding: 10px 20px; margin-left: 10px;">
+            📈 View Analytics
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function performAction(payoutId, action) {
+    if (!confirm(`Are you sure you want to ${action} payout #${payoutId}?`)) {
+        return;
+    }
+    
+    // Get CSRF token
+    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || 
+                     document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+    
+    fetch('{% url "users:ajax_payout_action" %}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CSRFToken': csrfToken
+        },
+        body: `payout_id=${payoutId}&action=${action}`
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message);
+            location.reload(); // Refresh the page
+        } else {
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('An error occurred while processing the request.');
+    });
+}
+</script>
+{% endblock %} 

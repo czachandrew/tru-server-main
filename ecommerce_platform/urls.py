@@ -15,11 +15,16 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
 from django.views.decorators.csrf import csrf_exempt
 from ecommerce_platform.graphql.views import DebugGraphQLView
 from ecommerce_platform.views import test_auth, debug_token, test_simple_task, check_task_status
-from affiliates.views import affiliate_callback, standalone_callback, check_affiliate_task_status, search_callback
+from affiliates.views import (
+    affiliate_callback, 
+    standalone_callback, 
+    check_affiliate_task_status, 
+    search_callback
+)
 from products.views import toggle_demo_mode, demo_status
 from graphene_django.views import GraphQLView
 import json
@@ -128,4 +133,7 @@ urlpatterns = [
     path('check-task/<str:task_id>/', check_task_status, name='check-task'),
     path('products/toggle-demo-mode/', toggle_demo_mode, name='toggle_demo_mode'),
     path('products/demo-status/', demo_status, name='demo_status'),
+    
+    # Payout Management Dashboard
+    path('', include('users.urls')),
 ]

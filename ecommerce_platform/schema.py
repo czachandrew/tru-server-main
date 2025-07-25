@@ -45,8 +45,12 @@ from ecommerce_platform.graphql.types.cart import CartType, CartItemType
 from ecommerce_platform.graphql.types.user import UserType
 from ecommerce_platform.graphql.mutations.auth import AuthMutation
 from ecommerce_platform.graphql.mutations.product import ProductMutation
-from ecommerce_platform.graphql.mutations.affiliate import AffiliateMutation
+from ecommerce_platform.graphql.mutations.affiliate import AffiliateMutation, ProjectedEarningType
 from ecommerce_platform.graphql.mutations.cart import CartMutation
+
+# Import new affiliate models for extension tracking
+from affiliates.models import AffiliateClickEvent, PurchaseIntentEvent
+from users.models import WalletTransaction
 
 # Import affiliate functions
 from affiliates.tasks import generate_standalone_amazon_affiliate_url, generate_affiliate_url_from_search
@@ -91,6 +95,75 @@ class ProductExistsResponse(graphene.ObjectType):
     affiliate_link = graphene.Field(AffiliateLinkType)
     needs_affiliate_generation = graphene.Boolean()
     message = graphene.String()
+
+# Wallet and affiliate tracking types
+class RecentClickType(graphene.ObjectType):
+    id = graphene.ID()
+    affiliate_link = graphene.Field(AffiliateLinkType)
+    clicked_at = graphene.DateTime()
+    target_domain = graphene.String()
+    session_duration = graphene.Int()
+    has_purchase_intent = graphene.Boolean()
+
+# ProjectedEarningType is now defined in ecommerce_platform.graphql.mutations.affiliate
+
+class WalletSummaryType(graphene.ObjectType):
+    available_balance = graphene.Float()
+    pending_balance = graphene.Float()
+    total_balance = graphene.Float()
+    
+    # Add camelCase aliases for frontend compatibility
+    availableBalance = graphene.Float()
+    pendingBalance = graphene.Float()
+    totalBalance = graphene.Float()
+    
+    def resolve_availableBalance(self, info):
+        return self.available_balance
+    
+    def resolve_pendingBalance(self, info):
+        return self.pending_balance
+    
+    def resolve_totalBalance(self, info):
+        return self.total_balance
+
+class UserAffiliateActivityType(graphene.ObjectType):
+    recent_clicks = graphene.List(RecentClickType)
+    projected_earnings = graphene.List(ProjectedEarningType)
+    wallet_summary = graphene.Field(WalletSummaryType)
+    
+    # Add camelCase aliases for frontend compatibility
+    recentClicks = graphene.List(RecentClickType)
+    projectedEarnings = graphene.List(ProjectedEarningType)
+    walletSummary = graphene.Field(WalletSummaryType)
+    
+    def resolve_recentClicks(self, info):
+        return self.recent_clicks
+    
+    def resolve_projectedEarnings(self, info):
+        return self.projected_earnings
+    
+    def resolve_walletSummary(self, info):
+        return self.wallet_summary
+
+# Input types for extension tracking
+class TrackAffiliateClickInput(graphene.InputObjectType):
+    affiliate_link_id = graphene.ID(required=True)
+    session_id = graphene.String(required=True)
+    target_domain = graphene.String(required=True)
+    referrer_url = graphene.String()
+    source = graphene.String()
+    product_data = graphene.JSONString()
+    browser_fingerprint = graphene.String()
+
+class TrackPurchaseIntentInput(graphene.InputObjectType):
+    click_event_id = graphene.ID(required=True)
+    intent_stage = graphene.String(required=True)
+    confidence_level = graphene.String(required=True)
+    page_url = graphene.String(required=True)
+    page_title = graphene.String()
+    cart_total = graphene.Float()
+    cart_items = graphene.JSONString()
+    matched_products = graphene.JSONString()
 
 # Input Types
 class ProductInput(graphene.InputObjectType):
@@ -302,6 +375,12 @@ class Query(graphene.ObjectType):
         ProductAssociationType,
         search_term=graphene.String(required=True),
         description="Check for existing product alternatives based on search term"
+    )
+    
+    # Wallet and affiliate tracking queries
+    user_affiliate_activity = graphene.Field(
+        UserAffiliateActivityType,
+        description="Get user's recent affiliate activity and projected earnings"
     )
     
     def resolve_featured_products(self, info, limit=None):
@@ -2274,6 +2353,76 @@ class Query(graphene.ObjectType):
         
         return associations
 
+    def resolve_user_affiliate_activity(self, info):
+        """Get user's recent affiliate activity and projected earnings"""
+        from graphql import GraphQLError
+        
+        # Check authentication
+        if not info.context.user.is_authenticated:
+            raise GraphQLError("Authentication required")
+        
+        try:
+            user = info.context.user
+            
+            # Get recent clicks
+            recent_clicks = AffiliateClickEvent.objects.filter(
+                user=user,
+                is_active=True
+            ).order_by('-clicked_at')[:10]
+            
+            # Get pending projected earnings
+            pending_transactions = WalletTransaction.objects.filter(
+                user=user,
+                transaction_type='EARNING_PROJECTED',
+                status='PENDING'
+            ).order_by('-created_at')
+            
+            # Format recent clicks
+            recent_clicks_data = []
+            for click in recent_clicks:
+                recent_clicks_data.append(RecentClickType(
+                    id=click.id,
+                    affiliate_link=click.affiliate_link,
+                    clicked_at=click.clicked_at,
+                    target_domain=click.target_domain,
+                    session_duration=click.session_duration,
+                    has_purchase_intent=click.purchase_intents.exists()
+                ))
+            
+            # Format projected earnings
+            projected_earnings_data = []
+            for txn in pending_transactions:
+                projected_earnings_data.append(ProjectedEarningType(
+                    # Fields for both mutation and query
+                    id=txn.id,
+                    transaction_id=txn.id,
+                    amount=float(txn.amount),
+                    confidence_level=txn.metadata.get('confidence_level'),
+                    user_balance=float(user.profile.pending_balance),
+                    # Additional fields for userAffiliateActivity query
+                    created_at=txn.created_at,
+                    intent_stage=txn.metadata.get('intent_stage'),
+                    platform=txn.affiliate_link.platform if txn.affiliate_link else None
+                ))
+            
+            # Format wallet summary
+            wallet_summary = WalletSummaryType(
+                available_balance=float(user.profile.available_balance),
+                pending_balance=float(user.profile.pending_balance),
+                total_balance=float(user.profile.total_balance)
+            )
+            
+            return UserAffiliateActivityType(
+                recent_clicks=recent_clicks_data,
+                projected_earnings=projected_earnings_data,
+                wallet_summary=wallet_summary
+            )
+            
+        except Exception as e:
+            logger = logging.getLogger('affiliate_tasks')
+            logger.error(f"Error getting user affiliate activity: {str(e)}")
+            raise GraphQLError("Failed to get affiliate activity")
+
     @staticmethod
     def _search_internal_inventory_context_aware_static(amazon_product_name):
         """
@@ -3006,10 +3155,9 @@ class Mutation(AuthMutation, ProductMutation, AffiliateMutation, CartMutation, g
     update_product = UpdateProduct.Field()
     create_product_from_amazon = CreateProductFromAmazon.Field()
     
-    # Affiliate link mutations
-    create_affiliate_link = CreateAffiliateLink.Field()
-    create_amazon_affiliate_link = CreateAmazonAffiliateLink.Field()
-    update_affiliate_link = UpdateAffiliateLink.Field()
+    # Affiliate link mutations (now included in AffiliateMutation)
+    # create_affiliate_link, create_amazon_affiliate_link, update_affiliate_link
+    # track_affiliate_click, track_purchase_intent are all in AffiliateMutation
     
     # Cart mutations
     add_to_cart = AddToCart.Field()
