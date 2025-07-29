@@ -5,7 +5,7 @@ from django.http import JsonResponse, HttpResponse
 from django.db.models import Q, Count, Sum, Avg
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from datetime import timedelta, datetime
 from decimal import Decimal
 import json
@@ -18,6 +18,7 @@ from .mock_payout_service import PayoutProcessor
 
 
 @staff_member_required
+@ensure_csrf_cookie
 def payout_queue_dashboard(request):
     """
     Comprehensive payout queue dashboard for admin management

@@ -239,8 +239,7 @@ class PayoutTaskManager:
             'users.tasks.process_single_payout_task',
             payout_id,
             group='payout_processing',
-            timeout=timeout,
-            priority=priority
+            timeout=timeout
         )
         
         logger.info(f"📤 Queued payout processing task {task_id} for payout #{payout_id} (priority: {priority})")

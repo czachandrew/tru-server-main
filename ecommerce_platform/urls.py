@@ -121,6 +121,9 @@ class SimpleDebugGraphQLView(GraphQLView):
             }, status=500)
 
 urlpatterns = [
+    # Payout Management Dashboard (must come before admin/ to avoid catch-all)
+    path('', include('users.urls')),
+    
     path('admin/', admin.site.urls),
     path('graphql/', csrf_exempt(SimpleDebugGraphQLView.as_view(graphiql=True))),
     path('test-auth/', test_auth, name='test-auth'),
@@ -133,7 +136,4 @@ urlpatterns = [
     path('check-task/<str:task_id>/', check_task_status, name='check-task'),
     path('products/toggle-demo-mode/', toggle_demo_mode, name='toggle_demo_mode'),
     path('products/demo-status/', demo_status, name='demo_status'),
-    
-    # Payout Management Dashboard
-    path('', include('users.urls')),
 ]

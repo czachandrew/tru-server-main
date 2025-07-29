@@ -3,8 +3,13 @@
 
 {% block title %}Payout Queue Dashboard{% endblock %}
 
+{% block extra_head %}
+<meta name="csrf-token" content="{{ csrf_token }}">
+{% endblock %}
+
 {% block content %}
 <div class="dashboard-content">
+    {% csrf_token %}
     <h1>📊 Payout Queue Dashboard</h1>
     
     <!-- Summary Statistics -->
@@ -230,14 +235,37 @@
 
 {% block extra_js %}
 <script>
+// Get CSRF token from cookie (Django's standard method)
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
 function performAction(payoutId, action) {
     if (!confirm(`Are you sure you want to ${action} payout #${payoutId}?`)) {
         return;
     }
     
-    // Get CSRF token
-    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || 
-                     document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+    // Get CSRF token from cookie or meta tag or inline
+    const csrfToken = getCookie('csrftoken') || 
+                     document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ||
+                     document.querySelector('[name=csrfmiddlewaretoken]')?.value ||
+                     '{{ csrf_token }}';
+    
+    if (!csrfToken) {
+        alert('CSRF token not found. Please refresh the page and try again.');
+        return;
+    }
     
     fetch('{% url "users:ajax_payout_action" %}', {
         method: 'POST',
@@ -245,7 +273,7 @@ function performAction(payoutId, action) {
             'Content-Type': 'application/x-www-form-urlencoded',
             'X-CSRFToken': csrfToken
         },
-        body: `payout_id=${payoutId}&action=${action}`
+        body: `payout_id=${payoutId}&action=${action}&csrfmiddlewaretoken=${csrfToken}`
     })
     .then(response => response.json())
     .then(data => {
