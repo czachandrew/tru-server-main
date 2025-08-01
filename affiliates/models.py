@@ -1,6 +1,7 @@
 from django.db import models
 from products.models import Product
 from django.utils import timezone
+from decimal import Decimal
 import logging
 logger = logging.getLogger('affiliate_tasks')
 
@@ -632,6 +633,56 @@ class PurchaseIntentEvent(models.Model):
         self.has_created_projection = True
         self.save(update_fields=['projected_transaction', 'has_created_projection'])
 
+        # Create referral disbursements if user has active codes
+        self.create_referral_disbursements(transaction, projected_amount)
+
         print(f"[DEBUG] WalletTransaction {transaction.id} created for user {self.user.id} (amount={projected_amount})")
 
         return transaction
+    
+    def create_referral_disbursements(self, wallet_transaction, commission_amount):
+        """Create referral disbursements for user's active codes (locked at purchase time)"""
+        from users.models import UserReferralCode, ReferralDisbursement
+        from users.services import ReferralCodeService
+        
+        # Get user's active codes at purchase time
+        active_codes = UserReferralCode.objects.filter(
+            user=self.user,
+            is_active=True
+        ).select_related('referral_code', 'referral_code__promotion')
+        
+        # Filter codes that are within valid promotion timeline
+        valid_codes = []
+        for user_code in active_codes:
+            promotion = user_code.referral_code.promotion
+            if (promotion and promotion.is_active and 
+                promotion.is_purchase_period_open()):
+                valid_codes.append(user_code)
+        
+        if not valid_codes:
+            print(f"[DEBUG] No valid referral codes for user {self.user.id}")
+            return
+        
+        # Calculate allocations for valid codes only (locked at purchase time)
+        allocations = ReferralCodeService.calculate_user_allocations(self.user)
+        
+        print(f"[DEBUG] Creating disbursements for {len(valid_codes)} valid codes")
+        
+        # Create disbursement records (immutable)
+        for user_code in valid_codes:
+            code_id = user_code.referral_code.id
+            if code_id in allocations.get('codes', {}):
+                disbursement_amount = commission_amount * (Decimal(str(allocations['codes'][code_id])) / Decimal('100'))
+                
+                disbursement = ReferralDisbursement.objects.create(
+                    wallet_transaction=wallet_transaction,
+                    referral_code=user_code.referral_code,
+                    recipient_user=user_code.referral_code.owner,
+                    amount=disbursement_amount,
+                    allocation_percentage=allocations['codes'][code_id],
+                    status='pending'
+                )
+                
+                print(f"[DEBUG] Created disbursement {disbursement.id}: ${disbursement_amount} to {user_code.referral_code.owner.email}")
+        
+        print(f"[DEBUG] Created {len(valid_codes)} referral disbursements for user {self.user.id}")

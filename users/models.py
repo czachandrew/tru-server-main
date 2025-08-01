@@ -127,6 +127,28 @@ class UserProfile(models.Model):
     # Legacy wallet field (deprecated in favor of available_balance)
     wallet = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     
+    # Organization fields
+    is_organization = models.BooleanField(
+        default=False,
+        help_text="Whether this user represents an organization"
+    )
+    organization_type = models.CharField(
+        max_length=50, 
+        blank=True,
+        help_text="Type of organization (501c3, church, school, etc.)"
+    )
+    organization_name = models.CharField(
+        max_length=200, 
+        blank=True,
+        help_text="Display name for the organization"
+    )
+    min_payout_amount = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=Decimal('10.00'),
+        help_text="Minimum payout amount for organizations"
+    )
+    
     def __str__(self):
         return f"Profile for {self.user.email}"
     
@@ -708,3 +730,332 @@ class PayoutRequest(models.Model):
         )
         
         return payout_request
+
+
+class ReferralCode(models.Model):
+    """Referral codes that organizations can create for fundraising"""
+    code = models.CharField(max_length=20, unique=True)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='referral_codes')
+    is_active = models.BooleanField(default=False, help_text="Code becomes active when promotion starts")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="30 days from creation (auto-set if blank)")
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['code']),
+            models.Index(fields=['owner', 'is_active']),
+            models.Index(fields=['expires_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.code} ({self.owner.email})"
+    
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        # Validation: 7+ chars, 2+ numbers, unique
+        if len(self.code) < 7:
+            raise ValidationError("Code must be at least 7 characters")
+        if sum(c.isdigit() for c in self.code) < 2:
+            raise ValidationError("Code must contain at least 2 numbers")
+    
+    def save(self, *args, **kwargs):
+        # Auto-set expiration date if not provided
+        if not self.expires_at:
+            from datetime import timedelta
+            self.expires_at = timezone.now() + timedelta(days=30)
+        
+        self.full_clean()
+        super().save(*args, **kwargs)
+    
+    @classmethod
+    def generate_unique_code(cls, owner):
+        """Generate a unique referral code for an organization"""
+        import random
+        import string
+        
+        # Generate codes until we find a unique one
+        max_attempts = 100
+        for attempt in range(max_attempts):
+            # Generate code: 3 letters + 4 numbers
+            letters = ''.join(random.choices(string.ascii_uppercase, k=3))
+            numbers = ''.join(random.choices(string.digits, k=4))
+            code = f"{letters}{numbers}"
+            
+            # Check if unique
+            if not cls.objects.filter(code=code).exists():
+                return code
+        
+        raise ValueError("Could not generate unique code after 100 attempts")
+    
+    @classmethod
+    def create_for_organization(cls, owner, code=None):
+        """Create a referral code for an organization with optional custom code"""
+        if code:
+            # Validate custom code
+            temp_instance = cls(code=code, owner=owner)
+            temp_instance.clean()
+        else:
+            # Generate unique code
+            code = cls.generate_unique_code(owner)
+        
+        return cls.objects.create(code=code, owner=owner)
+
+
+class Promotion(models.Model):
+    """Promotion campaigns for organizations with timeline management"""
+    organization = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='promotions',
+        limit_choices_to={'profile__is_organization': True}
+    )
+    referral_code = models.OneToOneField(ReferralCode, on_delete=models.CASCADE)
+    start_date = models.DateTimeField(help_text="When the promotion goes live")
+    code_entry_deadline = models.DateTimeField(null=True, blank=True, help_text="30 days after start (auto-calculated if blank)")
+    end_date = models.DateTimeField(null=True, blank=True, help_text="60 days after start (auto-calculated if blank)")
+    is_active = models.BooleanField(default=False)
+    total_allocations = models.IntegerField(default=0, help_text="Number of users who have this code")
+    
+    class Meta:
+        ordering = ['-start_date']
+        indexes = [
+            models.Index(fields=['organization', 'is_active']),
+            models.Index(fields=['start_date', 'end_date']),
+            models.Index(fields=['code_entry_deadline']),
+        ]
+    
+    def __str__(self):
+        return f"{self.organization.profile.organization_name} - {self.referral_code.code}"
+    
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        # Ensure start_date is provided
+        if not self.start_date:
+            raise ValidationError("Start date is required")
+    
+    def save(self, *args, **kwargs):
+        from datetime import timedelta
+        if not self.code_entry_deadline:
+            self.code_entry_deadline = self.start_date + timedelta(days=30)
+        if not self.end_date:
+            self.end_date = self.start_date + timedelta(days=60)
+        super().save(*args, **kwargs)
+        
+        # Activate the referral code when promotion starts
+        if self.is_active and not self.referral_code.is_active:
+            self.referral_code.is_active = True
+            self.referral_code.save()
+    
+    @classmethod
+    def create_for_organization(cls, organization, start_date, is_active=False, referral_code=None):
+        """Create a promotion with auto-generated referral code if needed"""
+        from datetime import timedelta
+        
+        # Create referral code if not provided
+        if not referral_code:
+            referral_code = ReferralCode.create_for_organization(organization)
+        
+        # Calculate dates
+        code_entry_deadline = start_date + timedelta(days=30)
+        end_date = start_date + timedelta(days=60)
+        
+        return cls.objects.create(
+            organization=organization,
+            referral_code=referral_code,
+            start_date=start_date,
+            code_entry_deadline=code_entry_deadline,
+            end_date=end_date,
+            is_active=is_active
+        )
+    
+    def get_status_display(self):
+        """Get human-readable status of the promotion"""
+        now = timezone.now()
+        
+        if not self.is_active:
+            return "Inactive"
+        elif now < self.start_date:
+            return "Scheduled"
+        elif now <= self.code_entry_deadline:
+            return "Active (Code Entry Open)"
+        elif now <= self.end_date:
+            return "Active (Code Entry Closed)"
+        else:
+            return "Expired"
+    
+    def is_code_entry_open(self):
+        """Check if users can still enter this code"""
+        now = timezone.now()
+        return self.is_active and now <= self.code_entry_deadline
+    
+    def is_purchase_period_open(self):
+        """Check if purchases can still count for this promotion"""
+        now = timezone.now()
+        return self.is_active and now <= self.end_date
+
+
+class UserReferralCode(models.Model):
+    """User's active referral codes with allocation percentages"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_referral_codes')
+    referral_code = models.ForeignKey(ReferralCode, on_delete=models.CASCADE)
+    allocation_percentage = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2,
+        help_text="Percentage of user's earnings allocated to this code"
+    )
+    is_active = models.BooleanField(default=True)
+    added_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        unique_together = ['user', 'referral_code']
+        ordering = ['-added_at']
+        indexes = [
+            models.Index(fields=['user', 'is_active']),
+            models.Index(fields=['referral_code', 'is_active']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.email} -> {self.referral_code.code} ({self.allocation_percentage}%)"
+    
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        # Ensure minimum 5% allocation
+        if self.allocation_percentage < 5:
+            raise ValidationError("Minimum allocation is 5%")
+        
+        # Ensure user doesn't exceed 5 codes
+        active_codes = UserReferralCode.objects.filter(
+            user=self.user, 
+            is_active=True
+        ).exclude(id=self.id).count()
+        if active_codes >= 5:
+            raise ValidationError("Maximum 5 active codes allowed")
+    
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class ReferralDisbursement(models.Model):
+    """Track disbursements from user earnings to organizations/individuals"""
+    wallet_transaction = models.ForeignKey(WalletTransaction, on_delete=models.CASCADE, related_name='referral_disbursements')
+    referral_code = models.ForeignKey(ReferralCode, on_delete=models.CASCADE)
+    recipient_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_disbursements')
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    allocation_percentage = models.DecimalField(max_digits=5, decimal_places=2)
+    status = models.CharField(
+        max_length=20, 
+        choices=[
+            ('pending', 'Pending'),
+            ('confirmed', 'Confirmed'),
+            ('paid', 'Paid')
+        ],
+        default='pending'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['recipient_user', 'status']),
+            models.Index(fields=['referral_code', 'status']),
+            models.Index(fields=['wallet_transaction']),
+            models.Index(fields=['created_at']),
+        ]
+    
+    def __str__(self):
+        return f"${self.amount} to {self.recipient_user.email} via {self.referral_code.code}"
+
+
+class OrganizationVerification(models.Model):
+    """Track organization verification process"""
+    organization = models.OneToOneField(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='verification',
+        limit_choices_to={'profile__is_organization': True}
+    )
+    verification_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', 'Pending'),
+            ('data_verified', 'Data Verified'),
+            ('manually_verified', 'Manually Verified'),
+            ('approved', 'Approved'),
+            ('rejected', 'Rejected')
+        ],
+        default='pending'
+    )
+    
+    # Required data verification
+    tax_id_verified = models.BooleanField(default=False)
+    address_verified = models.BooleanField(default=False)
+    phone_verified = models.BooleanField(default=False)
+    website_verified = models.BooleanField(default=False)
+    
+    # Manual verification
+    manual_verification_date = models.DateTimeField(null=True, blank=True)
+    verified_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='verified_organizations'
+    )
+    verification_notes = models.TextField(blank=True)
+    contact_person_name = models.CharField(max_length=100, blank=True)
+    contact_person_role = models.CharField(max_length=100, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['verification_status']),
+            models.Index(fields=['organization']),
+        ]
+    
+    def __str__(self):
+        return f"{self.organization.profile.organization_name} - {self.verification_status}"
+    
+    def check_data_completeness(self):
+        """Check if all required data is submitted (GoFundMe standards)"""
+        required_fields = [
+            self.organization.profile.organization_name,
+            self.organization.profile.organization_type,
+            # Add more required fields as needed
+        ]
+        return all(field for field in required_fields)
+    
+    def can_proceed_to_manual_verification(self):
+        """Check if ready for manual verification"""
+        return (
+            self.check_data_completeness() and
+            self.verification_status == 'pending'
+        )
+
+
+class OrganizationTaxInfo(models.Model):
+    """Placeholder for organization tax information (future implementation)"""
+    organization = models.OneToOneField(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='tax_info',
+        limit_choices_to={'profile__is_organization': True}
+    )
+    tax_form_type = models.CharField(max_length=20, blank=True)  # 'W9', '1099', etc.
+    tax_exempt_status = models.CharField(max_length=20, blank=True)  # '501c3', etc.
+    # Additional fields to be added based on accountant consultation
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Organization Tax Information"
+        verbose_name_plural = "Organization Tax Information"
+    
+    def __str__(self):
+        return f"Tax Info - {self.organization.profile.organization_name}"

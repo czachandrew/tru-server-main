@@ -10,7 +10,11 @@ from datetime import timedelta
 from decimal import Decimal
 import json
 
-from .models import User, UserProfile, WalletTransaction, PayoutRequest
+from .models import (
+    User, UserProfile, WalletTransaction, PayoutRequest,
+    ReferralCode, Promotion, UserReferralCode, ReferralDisbursement,
+    OrganizationVerification, OrganizationTaxInfo
+)
 from .withdrawal_service import WithdrawalAdminService
 from .services import WalletService, ReconciliationService
 from .activity_metrics import ActivityMetricsService
@@ -872,3 +876,332 @@ admin.site.add_action(WalletAdminActions.generate_wallet_analytics_report, 'Gene
 admin.site.site_header = 'Ecommerce Platform Admin'
 admin.site.site_title = 'Ecommerce Platform Admin'
 admin.site.index_title = 'Welcome to Ecommerce Platform Administration'
+
+
+# Referral System Admin Classes
+@admin.register(ReferralCode)
+class ReferralCodeAdmin(admin.ModelAdmin):
+    """Admin interface for referral codes"""
+    
+    list_display = [
+        'code', 'owner_email', 'is_active', 'created_at', 'expires_at', 'promotion_status'
+    ]
+    
+    list_filter = [
+        'is_active', 'created_at', 'expires_at'
+    ]
+    
+    search_fields = [
+        'code', 'owner__email', 'owner__profile__organization_name'
+    ]
+    
+    readonly_fields = [
+        'created_at'
+    ]
+    
+    fieldsets = (
+        ('Code Information', {
+            'fields': ('code', 'owner', 'is_active')
+        }),
+        ('Timeline', {
+            'fields': ('created_at', 'expires_at'),
+            'description': 'Expiration date will be auto-set to 30 days from creation if left blank'
+        }),
+    )
+    
+    def owner_email(self, obj):
+        return obj.owner.email
+    owner_email.short_description = 'Owner'
+    
+    def promotion_status(self, obj):
+        try:
+            promotion = obj.promotion
+            if promotion.is_active:
+                return f"Active ({promotion.start_date.strftime('%Y-%m-%d')} to {promotion.end_date.strftime('%Y-%m-%d')})"
+            else:
+                return "Inactive"
+        except:
+            return "No Promotion"
+    promotion_status.short_description = 'Promotion Status'
+    
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        if not obj:  # Only for new objects
+            form.base_fields['expires_at'].help_text = "Leave blank to auto-set to 30 days from creation"
+        return form
+    
+    actions = ['generate_codes_for_organizations']
+    
+    def generate_codes_for_organizations(self, request, queryset):
+        """Generate referral codes for selected organizations"""
+        from users.models import ReferralCode
+        
+        generated_count = 0
+        for org_user in queryset:
+            if org_user.profile.is_organization:
+                try:
+                    code = ReferralCode.create_for_organization(org_user)
+                    generated_count += 1
+                except Exception as e:
+                    self.message_user(request, f"Error generating code for {org_user.email}: {str(e)}", level='ERROR')
+        
+        self.message_user(request, f"Generated {generated_count} referral codes for organizations")
+    generate_codes_for_organizations.short_description = "Generate referral codes for selected organizations"
+
+
+@admin.register(Promotion)
+class PromotionAdmin(admin.ModelAdmin):
+    """Admin interface for promotions"""
+    
+    list_display = [
+        'organization_name', 'referral_code', 'is_active', 'start_date', 
+        'code_entry_deadline', 'end_date', 'total_allocations'
+    ]
+    
+    list_filter = [
+        'is_active', 'start_date', 'end_date'
+    ]
+    
+    search_fields = [
+        'organization__email', 'organization__profile__organization_name',
+        'referral_code__code'
+    ]
+    
+    readonly_fields = [
+        'total_allocations'
+    ]
+    
+    fieldsets = (
+        ('Promotion Information', {
+            'fields': ('organization', 'referral_code', 'is_active')
+        }),
+        ('Timeline', {
+            'fields': ('start_date', 'code_entry_deadline', 'end_date'),
+            'description': 'Code entry deadline and end date will be auto-calculated based on start date'
+        }),
+        ('Statistics', {
+            'fields': ('total_allocations',)
+        }),
+    )
+    
+    def organization_name(self, obj):
+        return obj.organization.profile.organization_name or obj.organization.email
+    organization_name.short_description = 'Organization'
+    
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        if not obj:  # Only for new objects
+            form.base_fields['code_entry_deadline'].help_text = "Leave blank to auto-calculate (30 days after start)"
+            form.base_fields['end_date'].help_text = "Leave blank to auto-calculate (60 days after start)"
+        return form
+    
+    actions = ['create_promotions_for_organizations']
+    
+    def create_promotions_for_organizations(self, request, queryset):
+        """Create promotions for selected organizations"""
+        from users.models import Promotion
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        created_count = 0
+        for org_user in queryset:
+            if org_user.profile.is_organization:
+                try:
+                    # Create promotion starting in 7 days
+                    start_date = timezone.now() + timedelta(days=7)
+                    promotion = Promotion.create_for_organization(
+                        organization=org_user,
+                        start_date=start_date,
+                        is_active=True
+                    )
+                    created_count += 1
+                except Exception as e:
+                    self.message_user(request, f"Error creating promotion for {org_user.email}: {str(e)}", level='ERROR')
+        
+        self.message_user(request, f"Created {created_count} promotions for organizations")
+    create_promotions_for_organizations.short_description = "Create promotions for selected organizations"
+
+
+@admin.register(UserReferralCode)
+class UserReferralCodeAdmin(admin.ModelAdmin):
+    """Admin interface for user referral codes"""
+    
+    list_display = [
+        'user_email', 'referral_code', 'allocation_percentage', 'is_active', 'added_at'
+    ]
+    
+    list_filter = [
+        'is_active', 'added_at', 'allocation_percentage'
+    ]
+    
+    search_fields = [
+        'user__email', 'referral_code__code', 'referral_code__owner__email'
+    ]
+    
+    readonly_fields = [
+        'added_at'
+    ]
+    
+    fieldsets = (
+        ('User Code Information', {
+            'fields': ('user', 'referral_code', 'allocation_percentage', 'is_active')
+        }),
+        ('Timeline', {
+            'fields': ('added_at',)
+        }),
+    )
+    
+    def user_email(self, obj):
+        return obj.user.email
+    user_email.short_description = 'User'
+
+
+@admin.register(ReferralDisbursement)
+class ReferralDisbursementAdmin(admin.ModelAdmin):
+    """Admin interface for referral disbursements"""
+    
+    list_display = [
+        'id', 'recipient_email', 'referral_code', 'amount_display', 
+        'allocation_percentage', 'status', 'created_at'
+    ]
+    
+    list_filter = [
+        'status', 'created_at', 'confirmed_at', 'paid_at'
+    ]
+    
+    search_fields = [
+        'recipient_user__email', 'referral_code__code', 'wallet_transaction__id'
+    ]
+    
+    readonly_fields = [
+        'created_at', 'confirmed_at', 'paid_at'
+    ]
+    
+    fieldsets = (
+        ('Disbursement Information', {
+            'fields': ('wallet_transaction', 'referral_code', 'recipient_user', 'amount', 'allocation_percentage', 'status')
+        }),
+        ('Timeline', {
+            'fields': ('created_at', 'confirmed_at', 'paid_at')
+        }),
+    )
+    
+    def recipient_email(self, obj):
+        return obj.recipient_user.email
+    recipient_email.short_description = 'Recipient'
+    
+    def amount_display(self, obj):
+        return f"${obj.amount}"
+    amount_display.short_description = 'Amount'
+
+
+@admin.register(OrganizationVerification)
+class OrganizationVerificationAdmin(admin.ModelAdmin):
+    """Admin interface for organization verification"""
+    
+    list_display = [
+        'organization_name', 'verification_status', 'data_complete', 
+        'manual_verification_date', 'verified_by_email', 'created_at'
+    ]
+    
+    list_filter = [
+        'verification_status', 'created_at', 'manual_verification_date'
+    ]
+    
+    search_fields = [
+        'organization__email', 'organization__profile__organization_name',
+        'contact_person_name'
+    ]
+    
+    readonly_fields = [
+        'created_at', 'updated_at'
+    ]
+    
+    fieldsets = (
+        ('Organization Information', {
+            'fields': ('organization', 'verification_status')
+        }),
+        ('Data Verification', {
+            'fields': ('tax_id_verified', 'address_verified', 'phone_verified', 'website_verified')
+        }),
+        ('Manual Verification', {
+            'fields': ('manual_verification_date', 'verified_by', 'verification_notes')
+        }),
+        ('Contact Information', {
+            'fields': ('contact_person_name', 'contact_person_role')
+        }),
+        ('Timeline', {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )
+    
+    actions = ['approve_verification', 'reject_verification', 'mark_data_verified']
+    
+    def organization_name(self, obj):
+        return obj.organization.profile.organization_name or obj.organization.email
+    organization_name.short_description = 'Organization'
+    
+    def data_complete(self, obj):
+        return obj.check_data_completeness()
+    data_complete.boolean = True
+    data_complete.short_description = 'Data Complete'
+    
+    def verified_by_email(self, obj):
+        return obj.verified_by.email if obj.verified_by else '-'
+    verified_by_email.short_description = 'Verified By'
+    
+    def approve_verification(self, request, queryset):
+        updated = queryset.update(
+            verification_status='approved',
+            manual_verification_date=timezone.now(),
+            verified_by=request.user
+        )
+        self.message_user(request, f'{updated} organization(s) approved for verification.')
+    approve_verification.short_description = 'Approve selected organizations'
+    
+    def reject_verification(self, request, queryset):
+        updated = queryset.update(verification_status='rejected')
+        self.message_user(request, f'{updated} organization(s) rejected.')
+    reject_verification.short_description = 'Reject selected organizations'
+    
+    def mark_data_verified(self, request, queryset):
+        updated = queryset.update(verification_status='data_verified')
+        self.message_user(request, f'{updated} organization(s) marked as data verified.')
+    mark_data_verified.short_description = 'Mark data as verified'
+
+
+@admin.register(OrganizationTaxInfo)
+class OrganizationTaxInfoAdmin(admin.ModelAdmin):
+    """Admin interface for organization tax information"""
+    
+    list_display = [
+        'organization_name', 'tax_form_type', 'tax_exempt_status', 'created_at'
+    ]
+    
+    list_filter = [
+        'tax_form_type', 'tax_exempt_status', 'created_at'
+    ]
+    
+    search_fields = [
+        'organization__email', 'organization__profile__organization_name'
+    ]
+    
+    readonly_fields = [
+        'created_at', 'updated_at'
+    ]
+    
+    fieldsets = (
+        ('Organization', {
+            'fields': ('organization',)
+        }),
+        ('Tax Information', {
+            'fields': ('tax_form_type', 'tax_exempt_status')
+        }),
+        ('Timeline', {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )
+    
+    def organization_name(self, obj):
+        return obj.organization.profile.organization_name or obj.organization.email
+    organization_name.short_description = 'Organization'

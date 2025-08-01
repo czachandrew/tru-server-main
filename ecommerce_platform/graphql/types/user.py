@@ -15,6 +15,7 @@ class UserType(DjangoObjectType):
     full_name = graphene.String()
     has_google_account = graphene.Boolean()
     wallet = graphene.Float()
+    profile = graphene.Field('ecommerce_platform.graphql.types.user.UserProfileType')
     
     def resolve_full_name(self, info):
         return self.get_full_name()
@@ -27,8 +28,18 @@ class UserType(DjangoObjectType):
             return float(self.profile.wallet)
         except (UserProfile.DoesNotExist, AttributeError):
             return 0.0
+    
+    def resolve_profile(self, info):
+        try:
+            return self.profile
+        except UserProfile.DoesNotExist:
+            return None
 
 class UserProfileType(DjangoObjectType):
     class Meta:
         model = UserProfile
-        fields = '__all__'
+        fields = ('id', 'user', 'phone', 'company', 'preferred_categories', 'created_at', 'updated_at',
+                 'stripe_connect_account_id', 'preferred_payout_method', 'paypal_email', 'payout_status',
+                 'last_payout_at', 'available_balance', 'pending_balance', 'lifetime_earnings',
+                 'total_withdrawn', 'total_spent', 'activity_score', 'min_cashout_amount', 'wallet',
+                 'is_organization', 'organization_type', 'organization_name', 'min_payout_amount')

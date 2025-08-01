@@ -243,3 +243,269 @@ class PayoutService:
             'pending_requests': pending_requests,
             'success_rate': (total_completed / total_requested * 100) if total_requested > 0 else 0
         } 
+
+
+class ReferralCodeService:
+    """Service for managing referral codes and allocations"""
+    
+    @staticmethod
+    def calculate_user_allocations(user):
+        """Calculate equal allocations for user's active codes + user's share"""
+        from users.models import UserReferralCode
+        
+        active_codes = UserReferralCode.objects.filter(
+            user=user, 
+            is_active=True
+        ).select_related('referral_code', 'referral_code__promotion')
+        
+        if not active_codes.exists():
+            return {'user': 100.0, 'codes': {}}
+        
+        # Filter codes that are within valid promotion timeline
+        valid_codes = []
+        for user_code in active_codes:
+            promotion = user_code.referral_code.promotion
+            if (promotion and promotion.is_active and 
+                promotion.is_code_entry_open()):
+                valid_codes.append(user_code)
+        
+        if not valid_codes:
+            return {'user': 100.0, 'codes': {}}
+        
+        # Equal distribution among valid codes
+        code_count = len(valid_codes)
+        code_percentage = 100.0 / (code_count + 1)  # +1 for user's share
+        
+        allocations = {'user': code_percentage, 'codes': {}}
+        for user_code in valid_codes:
+            allocations['codes'][user_code.referral_code.id] = code_percentage
+        
+        return allocations
+    
+    @staticmethod
+    def add_user_referral_code(user, referral_code, allocation_percentage=None):
+        """Add a referral code to user's active codes with automatic allocation calculation"""
+        from users.models import UserReferralCode, ReferralCode
+        from django.core.exceptions import ValidationError
+        
+        # Validate the referral code exists and is active
+        try:
+            referral_code = ReferralCode.objects.get(
+                code=referral_code,
+                is_active=True
+            )
+        except ReferralCode.DoesNotExist:
+            raise ValidationError("Invalid or inactive referral code")
+        
+        # Check if promotion is in code entry period
+        try:
+            promotion = referral_code.promotion
+            if not promotion or not promotion.is_code_entry_open():
+                raise ValidationError("Code entry period has ended for this promotion")
+        except:
+            raise ValidationError("Invalid promotion for this code")
+        
+        # Check if user already has this code (active or inactive)
+        existing_code = UserReferralCode.objects.filter(
+            user=user, 
+            referral_code=referral_code
+        ).first()
+        
+        if existing_code:
+            if existing_code.is_active:
+                raise ValidationError("You already have this code active")
+            else:
+                # Reactivate the existing code
+                existing_code.is_active = True
+                existing_code.added_at = timezone.now()  # Update the added date
+                existing_code.save()
+                user_code = existing_code
+        else:
+            # Calculate allocation if not provided
+            if allocation_percentage is None:
+                current_allocations = ReferralCodeService.calculate_user_allocations(user)
+                allocation_percentage = current_allocations.get('user', 100.0)
+            
+            # Create new user referral code
+            user_code = UserReferralCode.objects.create(
+                user=user,
+                referral_code=referral_code,
+                allocation_percentage=allocation_percentage
+            )
+        
+        # Recalculate all allocations to maintain equal distribution
+        ReferralCodeService.recalculate_user_allocations(user)
+        
+        return user_code
+    
+    @staticmethod
+    def remove_user_referral_code(user, user_referral_code_id):
+        """Remove a user referral code by UserReferralCode ID and recalculate allocations"""
+        from users.models import UserReferralCode
+        
+        try:
+            user_code = UserReferralCode.objects.get(
+                id=user_referral_code_id,
+                user=user,  # Security check - ensure it belongs to this user
+                is_active=True
+            )
+            user_code.is_active = False
+            user_code.save()
+            
+            # Recalculate remaining allocations
+            ReferralCodeService.recalculate_user_allocations(user)
+            
+            return True
+        except UserReferralCode.DoesNotExist:
+            return False
+    
+    @staticmethod
+    def recalculate_user_allocations(user):
+        """Recalculate allocations when codes are added/removed (affects future purchases only)"""
+        from users.models import UserReferralCode
+        
+        active_codes = UserReferralCode.objects.filter(
+            user=user, 
+            is_active=True
+        )
+        
+        if not active_codes.exists():
+            return
+        
+        # Equal distribution among remaining codes
+        code_count = active_codes.count()
+        new_percentage = 100.0 / (code_count + 1)  # +1 for user's share
+        
+        # Update all active codes
+        active_codes.update(allocation_percentage=new_percentage)
+    
+    @staticmethod
+    def get_user_referral_summary(user):
+        """Get comprehensive summary of user's referral code activity"""
+        from users.models import UserReferralCode, ReferralDisbursement
+        from django.db.models import Sum
+        
+        # Get active codes
+        active_codes = UserReferralCode.objects.filter(
+            user=user,
+            is_active=True
+        ).select_related('referral_code', 'referral_code__owner', 'referral_code__promotion')
+        
+        # Get total giving amount
+        total_giving = ReferralDisbursement.objects.filter(
+            wallet_transaction__user=user
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        
+        # Get potential giving (from projected earnings)
+        potential_giving = ReferralDisbursement.objects.filter(
+            wallet_transaction__user=user,
+            wallet_transaction__transaction_type='EARNING_PROJECTED'
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        
+        # Calculate current allocations
+        allocations = ReferralCodeService.calculate_user_allocations(user)
+        
+        return {
+            'active_codes': active_codes,
+            'total_giving': float(total_giving),
+            'potential_giving': float(potential_giving),
+            'net_earnings': float(user.profile.lifetime_earnings - total_giving),
+            'potential_net_earnings': float(user.profile.lifetime_earnings + user.profile.pending_balance - (total_giving + potential_giving)),
+            'allocations': allocations,
+            'user_allocation_percentage': float(allocations.get('user', 100.0))
+        }
+    
+    @staticmethod
+    def validate_referral_code(code):
+        """Validate a referral code format and existence"""
+        from users.models import ReferralCode
+        
+        # Check format
+        if len(code) < 7:
+            return False, "Code must be at least 7 characters"
+        
+        if sum(c.isdigit() for c in code) < 2:
+            return False, "Code must contain at least 2 numbers"
+        
+        # Check if code exists and is active
+        try:
+            referral_code = ReferralCode.objects.get(code=code, is_active=True)
+            
+            # Check if promotion is in code entry period
+            try:
+                promotion = referral_code.promotion
+                if not promotion or not promotion.is_code_entry_open():
+                    return False, "Code entry period has ended for this promotion"
+            except:
+                return False, "Invalid promotion for this code"
+            
+            return True, referral_code
+        except ReferralCode.DoesNotExist:
+            return False, "Invalid or inactive referral code"
+
+
+class OrganizationService:
+    """Service for managing organization-related operations"""
+    
+    @staticmethod
+    def create_organization_with_verification(user, organization_data):
+        """Create an organization user with verification record"""
+        from users.models import OrganizationVerification
+        
+        # Update user profile
+        user.profile.is_organization = True
+        user.profile.organization_name = organization_data.get('name', '')
+        user.profile.organization_type = organization_data.get('type', '')
+        user.profile.min_payout_amount = organization_data.get('min_payout_amount', 10.00)
+        user.profile.save()
+        
+        # Create verification record
+        verification = OrganizationVerification.objects.create(
+            organization=user,
+            verification_status='pending'
+        )
+        
+        return user, verification
+    
+    @staticmethod
+    def get_organization_summary(organization):
+        """Get comprehensive summary of organization's referral activity"""
+        from users.models import Promotion, ReferralDisbursement, UserReferralCode
+        from django.db.models import Sum, Count
+        
+        # Get active promotions
+        active_promotions = Promotion.objects.filter(
+            organization=organization,
+            is_active=True
+        ).select_related('referral_code')
+        
+        # Get total received disbursements
+        total_received = ReferralDisbursement.objects.filter(
+            recipient_user=organization
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        
+        # Get pending disbursements
+        pending_disbursements = ReferralDisbursement.objects.filter(
+            recipient_user=organization,
+            status='pending'
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        
+        # Get user count for each promotion
+        promotion_stats = []
+        for promotion in active_promotions:
+            user_count = UserReferralCode.objects.filter(
+                referral_code=promotion.referral_code,
+                is_active=True
+            ).count()
+            promotion_stats.append({
+                'promotion': promotion,
+                'user_count': user_count,
+                'status': promotion.get_status_display()
+            })
+        
+        return {
+            'active_promotions': promotion_stats,
+            'total_received': float(total_received),
+            'pending_disbursements': float(pending_disbursements),
+            'verification_status': organization.verification.verification_status if hasattr(organization, 'verification') else 'none'
+        } 
