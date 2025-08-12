@@ -315,6 +315,15 @@ class ProductSearchResult(graphene.ObjectType):
         
         return []
 
+class ProductExtractionResult(graphene.ObjectType):
+    """Result of URL product extraction for testing purposes"""
+    url = graphene.String()
+    platform = graphene.String()
+    platform_id = graphene.String()
+    asin = graphene.String()
+    success = graphene.Boolean()
+    error = graphene.String()
+
 class ProductQuery(graphene.ObjectType):
     # Basic product queries
     product = graphene.Field(ProductType, id=graphene.ID(), part_number=graphene.String())
@@ -370,6 +379,20 @@ class ProductQuery(graphene.ObjectType):
         graphene.String,
         asin=graphene.String(required=True),
         description="Debug endpoint to check ASIN lookup"
+    )
+    
+    # Test product extraction from URLs
+    test_extract_product = graphene.Field(
+        ProductExtractionResult,
+        url=graphene.String(required=True),
+        description="Test product extraction from URLs for affiliate extension"
+    )
+    
+    # camelCase alias for extension compatibility
+    testExtractProduct = graphene.Field(
+        ProductExtractionResult,
+        url=graphene.String(required=True),
+        description="Test product extraction from URLs for affiliate extension (camelCase)"
     )
     
     def resolve_product(self, info, id=None, part_number=None):
@@ -776,6 +799,137 @@ class ProductQuery(graphene.ObjectType):
             results.append(f"❌ Amazon product error: {str(e)}")
         
         return " | ".join(results)
+    
+    def resolve_test_extract_product(self, info, url):
+        """Test product extraction from URLs"""
+        return self._extract_product_from_url(url)
+    
+    def resolve_testExtractProduct(self, info, url):
+        """Test product extraction from URLs (camelCase alias)"""
+        return self._extract_product_from_url(url)
+    
+    def _extract_product_from_url(self, url):
+        """Helper method to extract product information from URLs"""
+        import re
+        from urllib.parse import urlparse
+        
+        try:
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.lower()
+            
+            result = ProductExtractionResult(
+                url=url,
+                success=False,
+                error=None,
+                platform=None,
+                platform_id=None,
+                asin=None
+            )
+            
+            # Amazon URL extraction
+            if 'amazon.com' in domain or 'amzn.to' in domain:
+                result.platform = "amazon"
+                
+                # Extract ASIN from various Amazon URL formats
+                asin_patterns = [
+                    r'/dp/([A-Z0-9]{10})',           # Standard product page
+                    r'/product/([A-Z0-9]{10})',       # Alternative format
+                    r'/gp/product/([A-Z0-9]{10})',    # Older format
+                    r'[?&]asin=([A-Z0-9]{10})',      # Query parameter
+                    r'/([A-Z0-9]{10})(?:[/?]|$)',    # ASIN at end of path
+                ]
+                
+                for pattern in asin_patterns:
+                    match = re.search(pattern, url)
+                    if match:
+                        asin = match.group(1)
+                        # Validate ASIN format (10 chars, starts with B)
+                        if len(asin) == 10 and asin.startswith('B'):
+                            result.platform_id = asin
+                            result.asin = asin
+                            result.success = True
+                            break
+                
+                if not result.success:
+                    result.error = "Could not extract valid ASIN from Amazon URL"
+            
+            # eBay URL extraction
+            elif 'ebay.com' in domain:
+                result.platform = "ebay"
+                
+                # Extract item ID from eBay URLs
+                ebay_patterns = [
+                    r'/itm/([0-9]+)',                # Standard item page
+                    r'[?&]item=([0-9]+)',            # Query parameter
+                ]
+                
+                for pattern in ebay_patterns:
+                    match = re.search(pattern, url)
+                    if match:
+                        item_id = match.group(1)
+                        result.platform_id = item_id
+                        result.success = True
+                        break
+                
+                if not result.success:
+                    result.error = "Could not extract item ID from eBay URL"
+            
+            # Best Buy URL extraction  
+            elif 'bestbuy.com' in domain:
+                result.platform = "bestbuy"
+                
+                # Extract SKU from Best Buy URLs
+                bestbuy_patterns = [
+                    r'/site/[^/]+/([0-9]+)\.p',      # Standard product page
+                    r'[?&]skuId=([0-9]+)',           # Query parameter
+                ]
+                
+                for pattern in bestbuy_patterns:
+                    match = re.search(pattern, url)
+                    if match:
+                        sku = match.group(1)
+                        result.platform_id = sku
+                        result.success = True
+                        break
+                
+                if not result.success:
+                    result.error = "Could not extract SKU from Best Buy URL"
+            
+            # Newegg URL extraction
+            elif 'newegg.com' in domain:
+                result.platform = "newegg"
+                
+                # Extract item number from Newegg URLs
+                newegg_patterns = [
+                    r'/Product/Product\.aspx\?Item=([A-Z0-9-]+)',  # Product page
+                    r'/p/([A-Z0-9-]+)',                             # Short format
+                ]
+                
+                for pattern in newegg_patterns:
+                    match = re.search(pattern, url)
+                    if match:
+                        item_number = match.group(1)
+                        result.platform_id = item_number
+                        result.success = True
+                        break
+                
+                if not result.success:
+                    result.error = "Could not extract item number from Newegg URL"
+            
+            else:
+                result.error = f"Unsupported platform: {domain}"
+            
+            return result
+            
+        except Exception as e:
+            return ProductExtractionResult(
+                url=url,
+                success=False,
+                error=f"Error parsing URL: {str(e)}",
+                platform=None,
+                platform_id=None,
+                asin=None
+            )
     
     @staticmethod
     def _handle_non_amazon_product_search_static(partNumber=None, name=None):
