@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.db import transaction
 from decimal import Decimal
 import logging
+import os
 from typing import Dict, List, Optional
 
 from quotes.models import Quote, QuoteItem, ProductMatch, VendorPricing
@@ -46,11 +47,27 @@ def process_quote_pdf(quote_id: int) -> dict:
         # Parse the PDF
         try:
             logger.info(f"🔍 Starting PDF parsing for quote {quote_id}")
-            logger.info(f"📄 PDF file: {quote.pdf_file.path}")
+            
+            # Try to use file path for local development, file object for Heroku
+            try:
+                # Local development - use file path if it exists
+                pdf_path = quote.pdf_file.path
+                if os.path.exists(pdf_path):
+                    pdf_input = pdf_path
+                    logger.info(f"📄 PDF file path (local): {pdf_input}")
+                else:
+                    # File path doesn't exist (Heroku) - use file object
+                    pdf_input = quote.pdf_file
+                    logger.info(f"📄 PDF file object (Heroku): {pdf_input.name}")
+            except (ValueError, AttributeError):
+                # Fallback to file object
+                pdf_input = quote.pdf_file
+                logger.info(f"📄 PDF file object (fallback): {pdf_input.name}")
+            
             logger.info(f"💡 Vendor hints: {vendor_hints}")
             
             parsed_data = parsing_service.parse_pdf_quote(
-                quote.pdf_file.path, 
+                pdf_input, 
                 vendor_hints
             )
             
