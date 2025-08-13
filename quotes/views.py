@@ -30,10 +30,17 @@ def upload_quote(request):
         form = QuoteUploadForm(request.POST, request.FILES)
         
         if form.is_valid():
+            # Read PDF content for Heroku compatibility
+            pdf_file = request.FILES['pdf_file']
+            pdf_file.seek(0)
+            pdf_content = pdf_file.read()
+            pdf_file.seek(0)  # Reset for form saving
+            
             # Create quote
             quote = form.save(commit=False)
             quote.user = request.user
-            quote.original_filename = request.FILES['pdf_file'].name
+            quote.original_filename = pdf_file.name
+            quote.pdf_content = pdf_content  # Store raw content for Heroku
             quote.status = 'parsing'
             quote.demo_mode_enabled = form.cleaned_data.get('demo_mode', False)
             quote.save()
@@ -335,11 +342,17 @@ def upload_quote_rest(request):
         # Get demo mode from form data
         demo_mode = request.POST.get('demoMode', 'false').lower() == 'true'
         
+        # Read PDF content for Heroku compatibility
+        uploaded_file.seek(0)  # Reset file pointer
+        pdf_content = uploaded_file.read()
+        uploaded_file.seek(0)  # Reset again for file field saving
+        
         # Create quote
         quote = Quote.objects.create(
             user=request.user,
             pdf_file=uploaded_file,
             original_filename=uploaded_file.name,
+            pdf_content=pdf_content,  # Store raw content for Heroku
             status='uploading',
             demo_mode_enabled=demo_mode
         )

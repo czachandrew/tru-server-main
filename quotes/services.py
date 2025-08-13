@@ -43,23 +43,40 @@ class QuoteParsingService:
         temp_file_path = None
         
         try:
-            # Handle both file objects (Heroku) and file paths (local dev)
-            if hasattr(pdf_file_or_path, 'read') and not isinstance(pdf_file_or_path, str):  # It's a file object
-                logger.info(f"🌐 Processing file object for Heroku compatibility")
-                
-                # Reset file pointer and read content
-                pdf_file_or_path.seek(0)
-                pdf_content = pdf_file_or_path.read()
+            # Handle file paths (local dev), file objects (Django FieldFile), and raw content (Heroku)
+            if isinstance(pdf_file_or_path, bytes):  # Raw PDF content from database
+                logger.info(f"🌐 Processing raw PDF content ({len(pdf_file_or_path)} bytes)")
                 
                 # Create temporary file for processing
                 with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                    tmp_file.write(pdf_content)
+                    tmp_file.write(pdf_file_or_path)
                     temp_file_path = tmp_file.name
                     pdf_file_path = temp_file_path
                 
-                # Disable caching for temporary files
-                cache_file = None
-                logger.info(f"📄 Created temporary file: {pdf_file_path}")
+                cache_file = None  # Disable caching for temporary files
+                logger.info(f"📄 Created temporary file from raw content: {pdf_file_path}")
+                
+            elif not isinstance(pdf_file_or_path, str):  # It's a file object (Django FieldFile)
+                logger.info(f"🌐 Processing file object for Heroku compatibility")
+                
+                try:
+                    # Try to read the file content - this will fail on Heroku if file doesn't exist
+                    pdf_file_or_path.seek(0)
+                    pdf_content = pdf_file_or_path.read()
+                    
+                    # Create temporary file for processing
+                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                        tmp_file.write(pdf_content)
+                        temp_file_path = tmp_file.name
+                        pdf_file_path = temp_file_path
+                    
+                    # Disable caching for temporary files
+                    cache_file = None
+                    logger.info(f"📄 Created temporary file: {pdf_file_path}")
+                    
+                except (FileNotFoundError, ValueError, IOError) as e:
+                    logger.error(f"❌ Cannot access file object on Heroku: {str(e)}")
+                    raise ValueError(f"File not accessible on Heroku ephemeral storage: {str(e)}")
                 
             else:  # It's a file path string (local dev)
                 logger.info(f"💻 Processing file path for local development")

@@ -37,6 +37,7 @@ class Quote(models.Model):
     # File storage
     pdf_file = models.FileField(upload_to='quotes/%Y/%m/%d/')
     original_filename = models.CharField(max_length=255)
+    pdf_content = models.BinaryField(null=True, blank=True, help_text="Raw PDF content for Heroku processing")
     
     # Financial totals
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)

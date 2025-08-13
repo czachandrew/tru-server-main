@@ -48,23 +48,28 @@ def process_quote_pdf(quote_id: int) -> dict:
         try:
             logger.info(f"🔍 Starting PDF parsing for quote {quote_id}")
             
-            # Try to use file path for local development, file object for Heroku
-            try:
-                # Local development - use file path if it exists
-                pdf_path = quote.pdf_file.path
-                logger.info(f"🔍 Checking file path: {pdf_path}")
-                
-                if os.path.exists(pdf_path):
-                    pdf_input = pdf_path
-                    logger.info(f"📄 PDF file path (local): {pdf_input}")
-                else:
-                    # File path doesn't exist (Heroku) - use file object
+            # Try to use file path for local development, stored content for Heroku
+            if quote.pdf_content:
+                # Use stored PDF content (Heroku)
+                pdf_input = quote.pdf_content
+                logger.info(f"📄 Using stored PDF content ({len(quote.pdf_content)} bytes)")
+            else:
+                # Try file path for local development
+                try:
+                    pdf_path = quote.pdf_file.path
+                    logger.info(f"🔍 Checking file path: {pdf_path}")
+                    
+                    if os.path.exists(pdf_path):
+                        pdf_input = pdf_path
+                        logger.info(f"📄 PDF file path (local): {pdf_input}")
+                    else:
+                        # File path doesn't exist - use file object
+                        pdf_input = quote.pdf_file
+                        logger.info(f"📄 PDF file object: {pdf_input.name} - path {pdf_path} does not exist")
+                except (ValueError, AttributeError) as e:
+                    # Fallback to file object
                     pdf_input = quote.pdf_file
-                    logger.info(f"📄 PDF file object (Heroku): {pdf_input.name} - path {pdf_path} does not exist")
-            except (ValueError, AttributeError) as e:
-                # Fallback to file object
-                pdf_input = quote.pdf_file
-                logger.info(f"📄 PDF file object (fallback): {pdf_input.name} - exception: {e}")
+                    logger.info(f"📄 PDF file object (fallback): {pdf_input.name} - exception: {e}")
             
             logger.info(f"💡 Vendor hints: {vendor_hints}")
             
