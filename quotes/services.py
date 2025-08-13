@@ -44,12 +44,18 @@ class QuoteParsingService:
         
         try:
             # Handle file paths (local dev), file objects (Django FieldFile), and raw content (Heroku)
-            if isinstance(pdf_file_or_path, bytes):  # Raw PDF content from database
-                logger.info(f"🌐 Processing raw PDF content ({len(pdf_file_or_path)} bytes)")
+            if isinstance(pdf_file_or_path, (bytes, memoryview)):  # Raw PDF content from database
+                # Convert memoryview to bytes if needed
+                if isinstance(pdf_file_or_path, memoryview):
+                    pdf_content = pdf_file_or_path.tobytes()
+                    logger.info(f"🌐 Processing PDF memoryview ({len(pdf_content)} bytes)")
+                else:
+                    pdf_content = pdf_file_or_path
+                    logger.info(f"🌐 Processing raw PDF bytes ({len(pdf_content)} bytes)")
                 
                 # Create temporary file for processing
                 with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                    tmp_file.write(pdf_file_or_path)
+                    tmp_file.write(pdf_content)
                     temp_file_path = tmp_file.name
                     pdf_file_path = temp_file_path
                 
