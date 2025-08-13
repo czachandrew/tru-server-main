@@ -54,6 +54,7 @@ from ecommerce_platform.graphql.types.quote import (
 from ecommerce_platform.graphql.mutations.auth import AuthMutation
 from ecommerce_platform.graphql.mutations.product import ProductMutation
 from ecommerce_platform.graphql.mutations.affiliate import AffiliateMutation, ProjectedEarningType
+from ecommerce_platform.graphql.queries.affiliate import AffiliateQuery
 from ecommerce_platform.graphql.mutations.cart import CartMutation
 from ecommerce_platform.graphql.mutations.referral import ReferralMutations
 from ecommerce_platform.graphql.mutations.quote import QuoteMutation
@@ -225,7 +226,7 @@ class ProductExtractionResult(graphene.ObjectType):
     error = graphene.String()
 
 # Query Class
-class Query(ReferralQueries, QuoteQuery, graphene.ObjectType):
+class Query(ReferralQueries, QuoteQuery, AffiliateQuery, graphene.ObjectType):
     # Product queries
     product = graphene.Field(ProductType, id=graphene.ID(), part_number=graphene.String())
     products = graphene.Field(

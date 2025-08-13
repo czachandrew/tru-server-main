@@ -29,6 +29,7 @@ class RecentClickType(graphene.ObjectType):
 
 class ProjectedEarningType(graphene.ObjectType):
     id = graphene.ID()
+    transaction_id = graphene.ID()  # Alias for id to match extension expectations
     amount = graphene.Float()
     created_at = graphene.DateTime()
     confidence_level = graphene.String()
@@ -121,6 +122,7 @@ class AffiliateQuery(graphene.ObjectType):
             for txn in pending_transactions:
                 projected_earnings_data.append(ProjectedEarningType(
                     id=txn.id,
+                    transaction_id=txn.id,  # Same as id for backward compatibility
                     amount=float(txn.amount),
                     created_at=txn.created_at,
                     confidence_level=txn.metadata.get('confidence_level'),

@@ -25,7 +25,7 @@ class UserType(DjangoObjectType):
     
     def resolve_wallet(self, info):
         try:
-            return float(self.profile.wallet)
+            return float(self.profile.total_balance)
         except (UserProfile.DoesNotExist, AttributeError):
             return 0.0
     

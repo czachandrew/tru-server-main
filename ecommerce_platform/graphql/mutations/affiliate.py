@@ -446,7 +446,7 @@ class TrackPurchaseIntent(graphene.Mutation):
                         transaction_id=projected_transaction.id,
                         amount=float(projected_transaction.amount),
                         confidence_level=input.confidence_level,
-                        user_balance=float(info.context.user.profile.pending_balance)
+                        user_balance=float(info.context.user.profile.total_balance)
                     )
             
             logger = logging.getLogger('affiliate_tasks')
