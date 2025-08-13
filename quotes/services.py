@@ -25,21 +25,49 @@ class QuoteParsingService:
         self.client = OpenAI(api_key=api_key)
         self.max_file_size = 10 * 1024 * 1024  # 10MB
     
-    def parse_pdf_quote(self, pdf_file_path: str, vendor_hints: Dict = None) -> Dict:
+    def parse_pdf_quote(self, pdf_file_or_path, vendor_hints: Dict = None) -> Dict:
         """
         Parse a PDF quote using OpenAI GPT-4 Vision API
         
         Args:
-            pdf_file_path: Path to the PDF file
+            pdf_file_or_path: File object (Heroku) or path string (local dev)
             vendor_hints: Optional hints about vendor (name, company)
             
         Returns:
             Dict containing parsed quote data
         """
+        import tempfile
+        import os
+        
+        # Track if we created a temporary file for cleanup
+        temp_file_path = None
+        
         try:
-            # Simple cache for development - check if we have a cached result
-            cache_file = pdf_file_path + '.parsed_cache.json'
-            if os.path.exists(cache_file):
+            # Handle both file objects (Heroku) and file paths (local dev)
+            if hasattr(pdf_file_or_path, 'read') and not isinstance(pdf_file_or_path, str):  # It's a file object
+                logger.info(f"🌐 Processing file object for Heroku compatibility")
+                
+                # Reset file pointer and read content
+                pdf_file_or_path.seek(0)
+                pdf_content = pdf_file_or_path.read()
+                
+                # Create temporary file for processing
+                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                    tmp_file.write(pdf_content)
+                    temp_file_path = tmp_file.name
+                    pdf_file_path = temp_file_path
+                
+                # Disable caching for temporary files
+                cache_file = None
+                logger.info(f"📄 Created temporary file: {pdf_file_path}")
+                
+            else:  # It's a file path string (local dev)
+                logger.info(f"💻 Processing file path for local development")
+                pdf_file_path = pdf_file_or_path
+                cache_file = pdf_file_path + '.parsed_cache.json'
+            
+            # Check cache only for local dev
+            if cache_file and os.path.exists(cache_file):
                 logger.info(f"📁 Using cached parsing result for {pdf_file_path}")
                 with open(cache_file, 'r') as f:
                     cached_data = json.load(f)
@@ -68,31 +96,48 @@ class QuoteParsingService:
                 result = self._parse_images_with_openai(pdf_images, vendor_hints)
             
             # Cache the result for faster debugging
-            try:
-                import json
-                from datetime import date, datetime
-                from decimal import Decimal
-                
-                def serialize_for_cache(obj):
-                    if isinstance(obj, (date, datetime)):
-                        return obj.isoformat()
-                    elif isinstance(obj, Decimal):
-                        return float(obj)
-                    elif isinstance(obj, dict):
-                        return {k: serialize_for_cache(v) for k, v in obj.items()}
-                    elif isinstance(obj, list):
-                        return [serialize_for_cache(item) for item in obj]
-                    return obj
-                
-                with open(cache_file, 'w') as f:
-                    json.dump(serialize_for_cache(result), f, indent=2)
-                logger.info(f"💾 Cached parsing result to {cache_file}")
-            except Exception as cache_error:
-                logger.warning(f"Could not cache result: {cache_error}")
+            if cache_file:
+                try:
+                    import json
+                    from datetime import date, datetime
+                    from decimal import Decimal
+                    
+                    def serialize_for_cache(obj):
+                        if isinstance(obj, (date, datetime)):
+                            return obj.isoformat()
+                        elif isinstance(obj, Decimal):
+                            return float(obj)
+                        elif isinstance(obj, dict):
+                            return {k: serialize_for_cache(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [serialize_for_cache(item) for item in obj]
+                        return obj
+                    
+                    with open(cache_file, 'w') as f:
+                        json.dump(serialize_for_cache(result), f, indent=2)
+                    logger.info(f"💾 Cached parsing result to {cache_file}")
+                except Exception as cache_error:
+                    logger.warning(f"Could not cache result: {cache_error}")
+            
+            # Clean up temporary file if we created one
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    logger.info(f"🗑️ Cleaned up temporary file: {temp_file_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not clean up temporary file: {cleanup_error}")
             
             return result
             
         except Exception as e:
+            # Clean up temporary file on error
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    logger.info(f"🗑️ Cleaned up temporary file after error: {temp_file_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not clean up temporary file after error: {cleanup_error}")
+            
             logger.error(f"Error parsing PDF quote: {str(e)}")
             raise
     
