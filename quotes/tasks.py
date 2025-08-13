@@ -52,17 +52,19 @@ def process_quote_pdf(quote_id: int) -> dict:
             try:
                 # Local development - use file path if it exists
                 pdf_path = quote.pdf_file.path
+                logger.info(f"🔍 Checking file path: {pdf_path}")
+                
                 if os.path.exists(pdf_path):
                     pdf_input = pdf_path
                     logger.info(f"📄 PDF file path (local): {pdf_input}")
                 else:
                     # File path doesn't exist (Heroku) - use file object
                     pdf_input = quote.pdf_file
-                    logger.info(f"📄 PDF file object (Heroku): {pdf_input.name}")
-            except (ValueError, AttributeError):
+                    logger.info(f"📄 PDF file object (Heroku): {pdf_input.name} - path {pdf_path} does not exist")
+            except (ValueError, AttributeError) as e:
                 # Fallback to file object
                 pdf_input = quote.pdf_file
-                logger.info(f"📄 PDF file object (fallback): {pdf_input.name}")
+                logger.info(f"📄 PDF file object (fallback): {pdf_input.name} - exception: {e}")
             
             logger.info(f"💡 Vendor hints: {vendor_hints}")
             
@@ -81,7 +83,10 @@ def process_quote_pdf(quote_id: int) -> dict:
             quote.save()
             
             logger.error(f"❌ PDF parsing failed for quote {quote_id}: {str(parsing_error)}")
-            logger.error(f"📄 File path: {quote.pdf_file.path}")
+            try:
+                logger.error(f"📄 File path: {quote.pdf_file.path}")
+            except:
+                logger.error(f"📄 File object: {quote.pdf_file.name}")
             logger.error(f"💡 Vendor hints: {vendor_hints}")
             
             import traceback
