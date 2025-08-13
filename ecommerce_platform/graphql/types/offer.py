@@ -8,6 +8,7 @@ class OfferTypeEnum(graphene.Enum):
     """Offer type enumeration"""
     SUPPLIER = 'supplier'
     AFFILIATE = 'affiliate'
+    QUOTE = 'quote'
 
 class VendorTypeEnum(graphene.Enum):
     """Vendor type enumeration"""
@@ -30,6 +31,7 @@ class OfferType(DjangoObjectType):
     offer_type = graphene.Field(OfferTypeEnum)
     is_affiliate = graphene.Boolean()
     is_supplier = graphene.Boolean()
+    is_quote = graphene.Boolean()
     
     # Price tracking for affiliates
     price_history_length = graphene.Int()
@@ -69,6 +71,10 @@ class OfferType(DjangoObjectType):
     def resolve_is_supplier(self, info):
         """Quick check if this is a supplier offer"""
         return self.offer_type == 'supplier'
+    
+    def resolve_is_quote(self, info):
+        """Quick check if this is a quote-based offer"""
+        return self.offer_type == 'quote'
     
     def resolve_price_history_length(self, info):
         """Return number of price history entries"""
@@ -128,7 +134,9 @@ class Offer(OfferType):
             "is_in_stock", "availability_updated_at", "created_at", "updated_at",
             # Hybrid fields
             "offer_type", "commission_rate", "expected_commission",
-            "price_last_updated", "price_history"
+            "price_last_updated", "price_history",
+            # Quote-specific fields
+            "is_confirmed", "source_quote"
         )
 
 class Vendor(VendorType):

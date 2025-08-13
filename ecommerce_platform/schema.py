@@ -47,12 +47,18 @@ from ecommerce_platform.graphql.types.referral import (
     ReferralCodeType, PromotionType, UserReferralCodeType, ReferralDisbursementType,
     UserReferralSummaryType, OrganizationSummaryType, ReferralCodeValidationResultType
 )
+from ecommerce_platform.graphql.types.quote import (
+    QuoteType, QuoteItemType, ProductMatchType, VendorPricingType,
+    QuoteUploadResponse, QuoteMatchResponse, QuoteProcessingStatus
+)
 from ecommerce_platform.graphql.mutations.auth import AuthMutation
 from ecommerce_platform.graphql.mutations.product import ProductMutation
 from ecommerce_platform.graphql.mutations.affiliate import AffiliateMutation, ProjectedEarningType
 from ecommerce_platform.graphql.mutations.cart import CartMutation
 from ecommerce_platform.graphql.mutations.referral import ReferralMutations
+from ecommerce_platform.graphql.mutations.quote import QuoteMutation
 from ecommerce_platform.graphql.queries.referral import ReferralQueries
+from ecommerce_platform.graphql.queries.quote import QuoteQuery
 
 # Import new affiliate models for extension tracking
 from affiliates.models import AffiliateClickEvent, PurchaseIntentEvent
@@ -219,7 +225,7 @@ class ProductExtractionResult(graphene.ObjectType):
     error = graphene.String()
 
 # Query Class
-class Query(ReferralQueries, graphene.ObjectType):
+class Query(ReferralQueries, QuoteQuery, graphene.ObjectType):
     # Product queries
     product = graphene.Field(ProductType, id=graphene.ID(), part_number=graphene.String())
     products = graphene.Field(
@@ -3322,7 +3328,7 @@ class ClearCart(graphene.Mutation):
         CartItem.objects.filter(cart=cart).delete()
         return ClearCart(success=True)
 
-class Mutation(AuthMutation, ProductMutation, AffiliateMutation, CartMutation, ReferralMutations, graphene.ObjectType):
+class Mutation(AuthMutation, ProductMutation, AffiliateMutation, CartMutation, ReferralMutations, QuoteMutation, graphene.ObjectType):
     # Product mutations
     create_product = CreateProduct.Field()
     update_product = UpdateProduct.Field()

@@ -6,6 +6,7 @@ from vendors.models import Vendor
 OFFER_TYPE_CHOICES = [
     ('supplier', 'Direct Supplier'),
     ('affiliate', 'Affiliate Referral'),
+    ('quote', 'Quote-Based Pricing'),
 ]
 
 class Offer(models.Model):
@@ -35,6 +36,20 @@ class Offer(models.Model):
     is_in_stock = models.BooleanField(default=True)
     availability_updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
+    
+    # Quote-specific fields (only used when offer_type='quote')
+    is_confirmed = models.BooleanField(
+        default=True,
+        help_text="Whether this price is confirmed/guaranteed (False for quote-based estimates)"
+    )
+    source_quote = models.ForeignKey(
+        'quotes.Quote',
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='generated_offers',
+        help_text="Source quote if this offer was generated from quote analysis"
+    )
     
     # Affiliate-specific fields (only used when offer_type='affiliate')
     commission_rate = models.DecimalField(
@@ -68,8 +83,8 @@ class Offer(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['product', 'vendor', 'offer_type'],
-                name='unique_product_vendor_offer_type'
+                fields=['product', 'vendor', 'offer_type', 'source_quote'],
+                name='unique_product_vendor_offer_quote'
             )
         ]
         indexes = [

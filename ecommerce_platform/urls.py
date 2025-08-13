@@ -17,6 +17,9 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+from django.conf.urls.static import static
+from quotes.views import upload_quote_rest, test_jwt_token
 from ecommerce_platform.graphql.views import DebugGraphQLView
 from ecommerce_platform.views import test_auth, debug_token, test_simple_task, check_task_status
 from affiliates.views import (
@@ -136,4 +139,13 @@ urlpatterns = [
     path('check-task/<str:task_id>/', check_task_status, name='check-task'),
     path('products/toggle-demo-mode/', toggle_demo_mode, name='toggle_demo_mode'),
     path('products/demo-status/', demo_status, name='demo_status'),
+    path('accounts/', include('django.contrib.auth.urls')),
+    path('quotes/', include('quotes.urls')),
+    # REST API endpoints
+    path('upload-quote/', upload_quote_rest, name='upload_quote_rest'),
+    path('test-jwt/', test_jwt_token, name='test_jwt_token'),
 ]
+
+# Serve media files in development
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'affiliates',
     'store',
     'users',
+    'quotes',
 ]
 
 MIDDLEWARE = [
@@ -152,7 +153,8 @@ GRAPHQL_JWT = {
     'JWT_AUTH_HEADER_PREFIX': 'JWT',
 }
 
-CORS_URLS_REGEX = r'^/graphql/.*$'
+# Remove CORS URL restriction to allow all endpoints (including REST API)
+# CORS_URLS_REGEX = r'^/(graphql|upload-quote)/.*$'
 
 print("Final Redis settings for Q_CLUSTER:", REDIS_HOST, REDIS_PORT, REDIS_DB)
 print(f"Q_CLUSTER Redis password: {'Set' if (url.password if 'REDISCLOUD_URL' in os.environ else local_redis_password) else 'Not set'}")
@@ -209,6 +211,28 @@ CORS_ALLOW_ORIGINS = [
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+
+# Additional CORS headers for file uploads and REST API
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
 
 
 # Database
@@ -267,6 +291,14 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/3.2/howto/static-files/
 
 STATIC_URL = '/static/'
+
+# Media files (File uploads)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# File upload settings
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 10MB
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h2>📋 {{ title }}</h2>
+                        <a href="{% url 'quotes:upload' %}" class="btn btn-primary">
+                            📤 Upload New Quote
+                        </a>
+                    </div>
+                    <div class="card-body">
+                        {% if quotes %}
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Vendor</th>
+                                            <th>Quote #</th>
+                                            <th>Status</th>
+                                            <th>Total</th>
+                                            <th>Items</th>
+                                            <th>Created</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for quote in quotes %}
+                                            <tr>
+                                                <td>{{ quote.id }}</td>
+                                                <td>
+                                                    <strong>{{ quote.vendor_company|default:"Unknown" }}</strong>
+                                                    {% if quote.vendor_name %}
+                                                        <br><small class="text-muted">{{ quote.vendor_name }}</small>
+                                                    {% endif %}
+                                                </td>
+                                                <td>{{ quote.quote_number|default:"-" }}</td>
+                                                <td>
+                                                    {% if quote.status == 'completed' %}
+                                                        <span class="badge bg-success">✅ Completed</span>
+                                                    {% elif quote.status == 'parsing' %}
+                                                        <span class="badge bg-warning">🔄 Parsing</span>
+                                                    {% elif quote.status == 'matching' %}
+                                                        <span class="badge bg-info">🔍 Matching</span>
+                                                    {% elif quote.status == 'error' %}
+                                                        <span class="badge bg-danger">❌ Error</span>
+                                                    {% else %}
+                                                        <span class="badge bg-secondary">{{ quote.status|title }}</span>
+                                                    {% endif %}
+                                                    {% if quote.demo_mode_enabled %}
+                                                        <br><span class="badge bg-purple mt-1">🎯 Demo</span>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if quote.total %}
+                                                        ${{ quote.total }}
+                                                    {% else %}
+                                                        -
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    <span class="badge bg-light text-dark">
+                                                        {{ quote.item_count }}/{{ quote.matched_item_count }} matched
+                                                    </span>
+                                                </td>
+                                                <td>
+                                                    {{ quote.created_at|date:"M j, Y" }}<br>
+                                                    <small class="text-muted">{{ quote.created_at|time:"H:i" }}</small>
+                                                </td>
+                                                <td>
+                                                    <a href="{% url 'quotes:detail' quote.id %}" class="btn btn-sm btn-outline-primary">
+                                                        👁️ View
+                                                    </a>
+                                                    <a href="/admin/quotes/quote/{{ quote.id }}/change/" class="btn btn-sm btn-outline-secondary" target="_blank">
+                                                        ⚙️ Admin
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        {% else %}
+                            <div class="text-center py-5">
+                                <h4>No quotes yet</h4>
+                                <p class="text-muted">Upload your first PDF quote to get started with analysis.</p>
+                                <a href="{% url 'quotes:upload' %}" class="btn btn-primary">
+                                    📤 Upload First Quote
+                                </a>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Quick Info Card -->
+                <div class="card mt-4">
+                    <div class="card-header">
+                        <h5>💡 Quote Analysis Features</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <h6>🤖 AI-Powered Parsing</h6>
+                                <p class="small">Upload any PDF quote and our AI will extract all line items, pricing, and vendor information automatically.</p>
+                            </div>
+                            <div class="col-md-4">
+                                <h6>🎯 Intelligent Matching</h6>
+                                <p class="small">Products are matched against your catalog using multiple algorithms including part numbers, descriptions, and manufacturers.</p>
+                            </div>
+                            <div class="col-md-4">
+                                <h6>💰 Demo Mode</h6>
+                                <p class="small">Enable demo mode to generate superior pricing (20% better) for unmatched products to showcase potential savings.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
