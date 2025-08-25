@@ -353,10 +353,24 @@ LOGGING = {
 }
 django_heroku.settings(locals())    
 
+# Debug logging for Google OAuth configuration
+import logging
+logger = logging.getLogger(__name__)
+
 # Google OAuth Settings
-GOOGLE_OAUTH_CLIENT_ID = os.getenv('GOOGLE_OAUTH2_CLIENT_ID')
+GOOGLE_OAUTH_CLIENT_IDS = os.getenv('GOOGLE_OAUTH2_CLIENT_IDS')
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv('GOOGLE_OAUTH2_CLIENT_SECRET')
 
+# Fallback to legacy single client ID for compatibility
+if not GOOGLE_OAUTH_CLIENT_IDS:
+    legacy_client_id = os.getenv('GOOGLE_OAUTH2_CLIENT_ID')
+    if legacy_client_id:
+        GOOGLE_OAUTH_CLIENT_IDS = legacy_client_id
+        logger.info(f"Using legacy GOOGLE_OAUTH2_CLIENT_ID as fallback: {legacy_client_id[:20]}...")
+
+logger.info(f"GOOGLE_OAUTH_CLIENT_IDS from environment: '{GOOGLE_OAUTH_CLIENT_IDS}'")
+logger.info(f"GOOGLE_OAUTH_CLIENT_SECRET from environment: {'SET' if GOOGLE_OAUTH_CLIENT_SECRET else 'NOT SET'}")
+
 # Make sure these are set in production, but allow development without them
-if not GOOGLE_OAUTH_CLIENT_ID and not DEBUG:
-    raise ValueError("GOOGLE_OAUTH2_CLIENT_ID environment variable is required in production")    
+if not GOOGLE_OAUTH_CLIENT_IDS and not DEBUG:
+    raise ValueError("GOOGLE_OAUTH_CLIENT_IDS environment variable is required in production")    

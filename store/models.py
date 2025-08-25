@@ -24,6 +24,22 @@ class Cart(models.Model):
     
     def __str__(self):
         return f"Cart {self.id} - {self.user.username if self.user else 'Anonymous'}"
+    
+    @property
+    def item_count(self):
+        """Return the total number of items in the cart"""
+        return sum(item.quantity for item in self.items.all())
+    
+    @property
+    def total_price(self):
+        """Return the total price of all items in the cart"""
+        return sum(item.total_price for item in self.items.all())
+    
+    def get_user_display(self):
+        """Get a display-friendly user identifier"""
+        if self.user:
+            return f"{self.user.username} ({self.user.email})"
+        return f"Anonymous (Session: {self.session_id[:8]}...)"
 
 class CartItem(models.Model):
     """Items in a shopping cart"""
@@ -44,3 +60,13 @@ class CartItem(models.Model):
     
     def __str__(self):
         return f"{self.quantity} x {self.offer.product.name}"
+    
+    @property
+    def total_price(self):
+        """Return the total price for this cart item (quantity * offer price)"""
+        return self.quantity * self.offer.selling_price
+    
+    @property
+    def unit_price(self):
+        """Return the unit price for this cart item"""
+        return self.offer.selling_price

@@ -28,8 +28,8 @@ class GoogleOAuthLogin(graphene.Mutation):
     
     def mutate(self, info, access_token):
         try:
-            # Verify access token by calling Google's API
-            user_info = GoogleOAuthService.get_user_info_from_access_token(access_token)
+            # Verify token (supports both ID tokens and access tokens)
+            user_info = GoogleOAuthService.get_user_info_from_token(access_token)
             
             if not user_info:
                 raise GraphQLError(
@@ -127,26 +127,34 @@ class GoogleOAuthRegister(graphene.Mutation):
     
     def mutate(self, info, access_token):
         try:
-            # Verify access token by calling Google's API
-            user_info = GoogleOAuthService.get_user_info_from_access_token(access_token)
+            logger.info(f"GoogleOAuthRegister mutation called with access token: {access_token[:20]}...")
+            logger.info(f"Access token length: {len(access_token)} characters")
+            
+            # Verify token (supports both ID tokens and access tokens)
+            user_info = GoogleOAuthService.get_user_info_from_token(access_token)
             
             if not user_info:
+                logger.error("GoogleOAuthRegister: get_user_info_from_access_token returned None")
                 raise GraphQLError(
                     "Invalid Google access token",
                     extensions={"code": "INVALID_CREDENTIALS"}
                 )
+            
+            logger.info(f"GoogleOAuthRegister: Successfully got user info for email: {user_info.get('email')}")
             
             email = user_info['email']
             google_id = user_info['google_id']
             
             # Check if user already exists
             if User.objects.filter(email=email).exists():
+                logger.info(f"GoogleOAuthRegister: User with email {email} already exists")
                 raise GraphQLError(
                     "User with this email already exists. Please use login instead.",
                     extensions={"code": "USER_EXISTS"}
                 )
             
             if User.objects.filter(google_id=google_id).exists():
+                logger.info(f"GoogleOAuthRegister: Google account {google_id} already registered")
                 raise GraphQLError(
                     "Google account already registered. Please use login instead.",
                     extensions={"code": "GOOGLE_ACCOUNT_EXISTS"}
@@ -209,8 +217,8 @@ class LinkGoogleAccount(graphene.Mutation):
             )
         
         try:
-            # Verify access token by calling Google's API
-            user_info = GoogleOAuthService.get_user_info_from_access_token(access_token)
+            # Verify token (supports both ID tokens and access tokens)
+            user_info = GoogleOAuthService.get_user_info_from_token(access_token)
             
             if not user_info:
                 raise GraphQLError(
